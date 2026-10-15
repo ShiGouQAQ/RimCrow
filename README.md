@@ -580,12 +580,7 @@ main.py     应用入口
 
 ## 鸣谢
 
-- [Inky-Feather/RimCrow](https://github.com/Inky-Feather/RimCrow) —— 本项目上游。模组管理、工坊、备份、排错、贴图优化、AI 辅助等全部核心能力来自上游作者与贡献者的工作，本分支只在其上追加了 MCP 接入层。
-- [fastmcp](https://github.com/jlowin/fastmcp) —— GUI 内嵌端点使用的 Python MCP 服务框架。
-- [rmcp · MCP 官方 Rust SDK](https://github.com/modelcontextprotocol/rust-sdk) —— rimcrow-mcp.exe 桥的协议实现。
-- [tokio](https://github.com/tokio-rs/tokio) —— 桥的异步运行时。
-- [Model Context Protocol](https://modelcontextprotocol.io) —— 让 AI 工具以统一协议接入应用的开放标准。
-- 以及上游技术栈所依托的开源项目：Python、Vue 3、Vite、pywebview、PyInstaller、uv、pytest。
+- [4h47-fun/RimCrow（feat/mcp-server 分支）](https://github.com/4h47-fun/RimCrow/tree/feat/mcp-server) —— 本分支 MCP 能力的实现参考。该分支最早为 RimCrow 带来 MCP Server（stdio 传输、按只读/写/高风险分级动态注册工具、EventBus 事件桥与冒烟脚本）；本分支在内嵌端点 + Rust 桥的架构下延续并扩展了这一方向。
 
 ## License
 

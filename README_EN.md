@@ -140,12 +140,7 @@ The `feat/edgelord` branch of this fork exposes RimCrow to external AI tools ove
 
 ## Acknowledgements
 
-- [Inky-Feather/RimCrow](https://github.com/Inky-Feather/RimCrow) — the upstream project. All core capabilities (mod management, Workshop, backups, troubleshooting, texture optimization, AI assist) come from the upstream author and contributors; this fork only adds the MCP integration layer on top.
-- [fastmcp](https://github.com/jlowin/fastmcp) — Python MCP server framework behind the embedded endpoint.
-- [rmcp (official MCP Rust SDK)](https://github.com/modelcontextprotocol/rust-sdk) — protocol implementation of the `rimcrow-mcp.exe` bridge.
-- [tokio](https://github.com/tokio-rs/tokio) — async runtime of the bridge.
-- [Model Context Protocol](https://modelcontextprotocol.io) — the open standard connecting AI tools to applications.
-- And the open-source foundations of the upstream stack: Python, Vue 3, Vite, pywebview, PyInstaller, uv, pytest.
+- [4h47-fun/RimCrow (feat/mcp-server branch)](https://github.com/4h47-fun/RimCrow/tree/feat/mcp-server) — implementation reference for the MCP capability of this branch. That branch first brought an MCP Server to RimCrow (stdio transport, tiered dynamic tool registration, an EventBus bridge, and smoke scripts); this branch continues and extends that direction on an embedded-endpoint + Rust bridge architecture.
 
 ## License
 
