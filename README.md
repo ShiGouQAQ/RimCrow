@@ -241,6 +241,26 @@ RimCrow 后端（扫描、加载顺序、工坊与下载、Git 来源、贴图�
 - 获取：工坊订阅与下载、Steam Web API 订阅、Git 仓库订阅与发布物部署、本地模组包导入、更新检查
 - 贴图：编码器管理与 DDS/ZSTD 批量转换（dry_run 预演 → 提交 → 轮询/取消）
 
+### 安装与使用
+
+1. **获取本分支构建**：从本仓库 Releases 下载 `RimCrow-v0.24.12-windows.zip`（GUI 与 `rimcrow-mcp.exe` 同批构建、版本对齐；如尚未发布，可按下节自行构建）。
+2. **接入 MCP 客户端**（Claude Desktop / Cursor 等 `mcpServers` 风格）：
+
+```json
+{
+  "mcpServers": {
+    "rimcrow": {
+      "command": "C:\\path\\to\\RimCrow\\rimcrow-mcp.exe"
+    }
+  }
+}
+```
+
+3. **用起来**：RimCrow GUI 开着即可被连接（桥每次调用实时探活，GUI 重启无需重启客户端）；GUI 未开时给桥加 `--spawn` 参数可自动拉起。OpenCode / ZCode 用户把同一条命令填进各自客户端的本地 stdio server 配置即可。
+4. **AI 能替你做的事**：读取与修改加载顺序、扫描并解释模组冲突、检索日志定位报错、一键补订缺失依赖、批量贴图转 DDS/ZSTD——所有写操作自带乐观锁与 dry_run 预演护栏。
+
+桥的完整参数、环境变量与 endpoint 契约见 [ShiGouQAQ/rimcrow-mcp](https://github.com/ShiGouQAQ/rimcrow-mcp)。
+
 ### 安全与一致性护栏
 
 - 端点只绑定回环地址，访问需要 Bearer Token；端点文件位于 `%LOCALAPPDATA%\RimCrow\mcp-endpoint.json`，随启动刷新。

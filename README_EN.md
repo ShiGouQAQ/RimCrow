@@ -138,6 +138,26 @@ The `feat/edgelord` branch of this fork exposes RimCrow to external AI tools ove
 - Build: `uv run python pack_pyinstaller.py` (steps: frontend → bridge → app → docs → tree → zip). Smoke test: `uv run python scripts/smoke_bridge.py`.
 - Bridge env overrides: `RIMCROW_MCP_ENDPOINT`, `RIMCROW_MCP_LOG`, `RIMCROW_SPAWN_CMD`, `RIMCROW_MCP_SPAWN_NO_WINDOW`.
 
+### Install & Use
+
+1. Get the build: download `RimCrow-v0.24.12-windows.zip` from this repo's Releases (GUI + `rimcrow-mcp.exe`, version-aligned; if not published yet, build it yourself as described below).
+2. Register the bridge with any MCP client (`mcpServers` style, e.g. Claude Desktop / Cursor):
+
+```json
+{
+  "mcpServers": {
+    "rimcrow": {
+      "command": "C:\\path\\to\\RimCrow\\rimcrow-mcp.exe"
+    }
+  }
+}
+```
+
+3. Keep the RimCrow GUI running — every call re-probes the endpoint, and a GUI restart never requires restarting the client. Add `--spawn` to the bridge command to auto-launch the GUI when it is closed. OpenCode / ZCode users: put the same command into their local stdio server config.
+4. Things the AI can do for you: read and modify load order, scan and explain mod conflicts, search logs for errors, one-click subscribe missing dependencies, batch texture conversion to DDS/ZSTD — all write operations carry optimistic-lock and dry-run guards.
+
+Full bridge parameters, environment variables, and the endpoint contract: [ShiGouQAQ/rimcrow-mcp](https://github.com/ShiGouQAQ/rimcrow-mcp).
+
 ## Acknowledgements
 
 - [4h47-fun/RimCrow (feat/mcp-server branch)](https://github.com/4h47-fun/RimCrow/tree/feat/mcp-server) — implementation reference for the MCP capability of this branch. That branch first brought an MCP Server to RimCrow (stdio transport, tiered dynamic tool registration, an EventBus bridge, and smoke scripts); this branch continues and extends that direction on an embedded-endpoint + Rust bridge architecture.
