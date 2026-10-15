@@ -1,4 +1,4 @@
-·[RimModManager]
+·[feat-edgelord]
 ├── ·[backend]
 │   ├── ·[ai]
 │   │   ├──  ai_contracts.py
@@ -25,7 +25,6 @@
 │   │   ├──  runtime.py
 │   │   └──  workshop_selection.py
 │   │   
-│   ├── ·[environment]
 │   ├── ·[i18n]
 │   │   ├──  language_registry.py
 │   │   └──  messages.py
@@ -65,7 +64,8 @@
 │   │   ├──  mgr_sub_browser.py
 │   │   ├──  mgr_texture_opt.py
 │   │   ├──  mgr_update.py
-│   │   └──  mgr_workshop_db.py
+│   │   ├──  mgr_workshop_db.py
+│   │   └──  texture_encoders.py
 │   │   
 │   ├── ·[migrations]
 │   │   ├──  app_relocation.py
@@ -123,6 +123,20 @@
 │   ├──  _version.py
 │   ├──  api.py
 │   ├──  browser_runtime.py
+│   ├──  lifecycle.py
+│   ├──  mcp_adapters_query.py
+│   ├──  mcp_deps.py
+│   ├──  mcp_embed.py
+│   ├──  mcp_endpoint.py
+│   ├──  mcp_errors.py
+│   ├──  mcp_guard.py
+│   ├──  mcp_handlers_features.py
+│   ├──  mcp_handlers_texture.py
+│   ├──  mcp_loadops.py
+│   ├──  mcp_logview.py
+│   ├──  mcp_server.py
+│   ├──  mcp_stdio.py
+│   ├──  mcp_tool_specs.py
 │   ├──  settings.py
 │   ├──  static_page.py
 │   ├──  theme_store.py
@@ -364,14 +378,29 @@
 │   ├──  README.md
 │   └──  vite.config.js
 │   
+├── ·[plan]
 ├── ·[scripts]
 │   ├──  analyze_i18n_duplicates.py
+│   ├──  benchmark_zstd_pipeline.py
 │   ├──  create_locale.py
 │   ├──  extract_i18n_messages.py
+│   ├──  gen_tool_cache.py
 │   ├──  locale_workfile.py
 │   ├──  setup_steamworks_runtime.py
-│   └──  validate_locale_quality.py
+│   ├──  smoke_bridge.py
+│   ├──  smoke_mcp.py
+│   ├──  validate_locale_quality.py
+│   └──  verify_embed.py
 │   
+├── ·[var]
+│   └── ·[tmp]
+│   
+│       ├──  a_comments.txt
+│       ├──  comment_runs.py
+│       ├──  myset_a.diff
+│       └──  myset_b.diff
+│       
+├──  .git
 ├──  .gitignore
 ├──  .gitmodules
 ├──  .python-version
@@ -386,6 +415,9 @@
 ├──  pyproject.toml
 ├──  README.md
 ├──  README_EN.md
+├──  rw_hits.txt
+├──  rw_hits2.txt
+├──  rw_hits3.txt
 ├──  splash.png
 ├──  uv.lock
 └──  validate_environment.py

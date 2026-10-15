@@ -8,32 +8,57 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
+
+class _StubAny:
+    """全通配桩符号：可实例化、可调用、可继续取属性（桩缺符号时的降级用）。"""
+
+    def __init__(self, *args, **kwargs):
+        pass
+
+    def __call__(self, *args, **kwargs):
+        return _StubAny()
+
+    def __getattr__(self, name):
+        return _StubAny
+
+
 class _PeeweeModel:
-    pass
+    def __init__(self, *args, **kwargs):
+        pass
 
-
-peewee_stub = types.ModuleType("peewee")
-peewee_stub.Model = _PeeweeModel
-peewee_stub.JOIN = object()
-sys.modules.setdefault("peewee", peewee_stub)
-
-playhouse_stub = types.ModuleType("playhouse")
-playhouse_shortcuts_stub = types.ModuleType("playhouse.shortcuts")
-playhouse_shortcuts_stub.model_to_dict = lambda value, *args, **kwargs: value
-sys.modules.setdefault("playhouse", playhouse_stub)
-sys.modules.setdefault("playhouse.shortcuts", playhouse_shortcuts_stub)
-
-webview_stub = types.ModuleType("webview")
-webview_stub.WebViewException = Exception
-webview_stub.Window = object
-sys.modules.setdefault("webview", webview_stub)
+    def __call__(self, *args, **kwargs):
+        return _PeeweeModel()
 
 
 def _stub_module(name, **attrs):
+    """安装 hermetic 桩模块：显式符号 + PEP 562 未知符号惰性回退通配桩。
+
+    显式列出关键符号；其余符号惰性回退，防止上游新增 import 后桩失效
+    （例如 peewee 桩缺 BigIntegerField/CharField → api.py 收集期
+    ImportError，届时需逐个补符号）。
+    """
     module = types.ModuleType(name)
     for key, value in attrs.items():
         setattr(module, key, value)
+    # PEP 562 的 __getattr__ 会连 __path__/__spec__ 一起拦（import 系统迭代 __path__ 报
+    # 'type' object is not iterable）→ 预置包语义必需项再挂回退
+    module.__path__ = []
+    module.__spec__ = None
+    module.__getattr__ = lambda attr: _StubAny
     sys.modules.setdefault(name, module)
+    return module
+
+
+_stub_module(
+    "peewee",
+    Model=_PeeweeModel,
+    JOIN=object(),
+    BigIntegerField=_PeeweeModel,
+    CharField=_PeeweeModel,
+)
+_stub_module("playhouse", JOIN=object())
+_stub_module("playhouse.shortcuts", model_to_dict=lambda value, *args, **kwargs: value)
+_stub_module("webview", WebViewException=Exception, Window=object)
 
 
 class _Dummy:
@@ -66,6 +91,7 @@ _stub_module(
     db=_Dummy(),
     MOD_ASSET_STATE_MISSING="missing",
     MOD_ASSET_STATE_PRESENT="present",
+    MOD_ASSET_STATE_DELETED="deleted",
 )
 _stub_module(
     "backend.database.dao",

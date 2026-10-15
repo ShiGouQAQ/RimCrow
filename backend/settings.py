@@ -224,6 +224,7 @@ class UIConfig:
 @dataclass
 class TextureOptConfig:
     texture_tools_path: str = str(TOOLS_DIR / "texture_tools")  # 贴图工具目录
+    encoder_backend: str = "todds"              # 转换档位：todds=标准 / nvtt=中等 / texconv=快速
     process_mode: str = "scaled_only_overwrite"
     output_format: str = "dds"                 # 输出格式：dds 或 zstd
     generate_mipmaps: bool = True            # 是否生成 Mipmap
@@ -547,7 +548,7 @@ class SettingsManager:
 
             if backup_fragment is not None:
                 # 只要更新备份还在，就把它当作“缺失字段补丁源”参与合并：
-                # 1. 当前配置完全损坏/丢失时，可直接由备份兜底；
+                # 1. 当前配置完全损坏/丢失时，可直接以备份恢复；
                 # 2. 当前配置只能解析出一部分字段时，可从备份补齐剩余可识别字段；
                 # 3. 当前配置中已经成功读取出的值始终优先，避免旧备份反向覆盖用户最新设置。
                 merged_fragment = self._merge_config_dicts(backup_fragment or {}, effective_fragment)

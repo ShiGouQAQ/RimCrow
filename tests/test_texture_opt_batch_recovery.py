@@ -6,7 +6,13 @@ from unittest.mock import patch
 
 from PIL import Image
 
-from backend.managers.mgr_texture_opt import TextureOptError, TextureOptimizationManager, TextureTask, ToddsEncoder
+from backend.managers.mgr_texture_opt import TextureOptimizationManager, TextureTask
+from backend.managers.texture_encoders import TextureOptError, ToddsEncoder, ToolRunError
+
+
+def _fake_paths(entries):
+    """entries 协议：fake 内从扫描条目取 source_path。"""
+    return [str(entry.get("source_path") or "") for entry in (entries or [])]
 
 
 class TestTextureOptBatchRecovery(unittest.TestCase):
@@ -51,14 +57,14 @@ class TestTextureOptBatchRecovery(unittest.TestCase):
         calls: list[list[str]] = []
         first_batch = True
 
-        def fake_encode_batch(_cancel_event, *, source_paths, overwrite_existing, scale_percent, max_size=None, output_callback=None):
+        def fake_encode_batch(_cancel_event, *, entries, overwrite_existing, scale_percent, output_callback=None, on_unit_done=None):
             nonlocal first_batch
-            paths = list(source_paths or [])
+            paths = _fake_paths(entries)
             calls.append(paths)
             if first_batch:
                 first_batch = False
                 good.with_suffix(".dds").write_bytes(b"good-dds")
-                raise TextureOptError("todds 执行失败: batch contains invalid source")
+                raise ToolRunError("todds 执行失败: batch contains invalid source", kind="failed")
             for source_path in paths:
                 Path(source_path).with_suffix(".dds").write_bytes(b"dds")
 
@@ -79,8 +85,8 @@ class TestTextureOptBatchRecovery(unittest.TestCase):
         task = self._make_task()
         calls: list[list[str]] = []
 
-        def fake_encode_batch(_cancel_event, *, source_paths, overwrite_existing, scale_percent, max_size=None, output_callback=None):
-            paths = list(source_paths or [])
+        def fake_encode_batch(_cancel_event, *, entries, overwrite_existing, scale_percent, output_callback=None, on_unit_done=None):
+            paths = _fake_paths(entries)
             calls.append(paths)
             for source_path in paths:
                 if Path(source_path) == good:
@@ -105,12 +111,12 @@ class TestTextureOptBatchRecovery(unittest.TestCase):
         task = self._make_task()
         first_batch = True
 
-        def fake_encode_batch(_cancel_event, *, source_paths, overwrite_existing, scale_percent, max_size=None, output_callback=None):
+        def fake_encode_batch(_cancel_event, *, entries, overwrite_existing, scale_percent, output_callback=None, on_unit_done=None):
             nonlocal first_batch
-            paths = list(source_paths or [])
+            paths = _fake_paths(entries)
             if first_batch:
                 first_batch = False
-                raise TextureOptError("todds 执行失败: batch contains invalid source")
+                raise ToolRunError("todds 执行失败: batch contains invalid source", kind="failed")
             for source_path in paths:
                 Path(source_path).with_suffix(".dds").write_bytes(b"dds")
 
@@ -129,8 +135,8 @@ class TestTextureOptBatchRecovery(unittest.TestCase):
         source = self._write_png("Textures/result-write.png")
         task = self._make_task()
 
-        def fake_encode_batch(_cancel_event, *, source_paths, overwrite_existing, scale_percent, max_size=None, output_callback=None):
-            for source_path in source_paths or []:
+        def fake_encode_batch(_cancel_event, *, entries, overwrite_existing, scale_percent, output_callback=None, on_unit_done=None):
+            for source_path in _fake_paths(entries):
                 Path(source_path).with_suffix(".dds").write_bytes(b"dds")
 
         with patch.object(ToddsEncoder, "encode_batch", side_effect=fake_encode_batch), \
@@ -174,7 +180,7 @@ class TestTextureOptBatchRecovery(unittest.TestCase):
         self._write_png("Textures/bad.png")
         task = self._make_task()
 
-        with patch.object(ToddsEncoder, "encode_batch", side_effect=TextureOptError("todds 执行失败: invalid png payload")):
+        with patch.object(ToddsEncoder, "encode_batch", side_effect=ToolRunError("todds 执行失败: invalid png payload", kind="failed")):
             self.manager._run_task(task)
 
         self.assertEqual(task.status, "failed")

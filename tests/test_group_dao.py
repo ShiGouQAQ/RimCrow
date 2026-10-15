@@ -69,6 +69,14 @@ class TestGroupDAO(unittest.TestCase):
         ]
         self.assertEqual(ordered_ids, ["g1", "g2"])
 
+    def test_reorder_groups_rejects_ids_on_empty_table(self):
+        # 空分组表 + 非空提交必须被数量校验拒绝（伪造 id 也算）；
+        # 空表 + 空提交则是无操作成功。
+        with self.assertRaisesRegex(ValueError, "数量与当前数据不一致"):
+            GroupDAO.reorder_groups(["ghost-group"])
+        self.assertIsNone(GroupDAO.reorder_groups([]))
+        self.assertEqual(GroupData.select().count(), 0)
+
     def test_update_group_info_rejects_invalid_payload(self):
         GroupData.create(group_id="g1", name="A", color="#ffffff", sort_index=0, is_expanded=True)
 

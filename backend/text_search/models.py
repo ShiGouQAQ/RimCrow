@@ -58,6 +58,8 @@ class SearchRequest:
     case_sensitive: bool = False
     file_types: tuple[str, ...] = field(default_factory=lambda: DEFAULT_FILE_TYPES)
     exclude_options: dict[str, Any] = field(default_factory=lambda: dict(DEFAULT_EXCLUDE_OPTIONS))
+    # 文件名匹配模式（默认 False＝上游内容检索行为原样）。
+    filenames_only: bool = False
 
     @classmethod
     def from_payload(cls, payload: dict[str, Any] | None):
@@ -75,14 +77,29 @@ class SearchRequest:
         if isinstance(extra_excludes, dict):
             exclude_options.update(extra_excludes)
 
+        # filenames_only（MCP 按文件名检索时才为 True，默认 False＝上游内容检索原样）：
+        # 该模式的既定语义是「按文件名/相对路径找资源」，因此 (a) 未显式给 file_types
+        # 时不按默认 .xml 收窄；(b) 关掉内容检索的三个目录排除（Textures/Source/
+        # Languages 正是目标目录）。显式传入的 file_types / exclude_options 优先。
+        filenames_only = bool(data.get("filenames_only"))
+        raw_file_types = data.get("file_types")
+        if filenames_only:
+            for key in ("skip_textures", "skip_languages", "skip_source"):
+                if not (isinstance(extra_excludes, dict) and key in extra_excludes):
+                    exclude_options[key] = False
+            file_types = normalize_file_types(raw_file_types) if raw_file_types else (".",)
+        else:
+            file_types = normalize_file_types(raw_file_types)
+
         return cls(
             query=query,
             scope=scope,
             effective_only=bool(data.get("effective_only", True)),
             use_regex=bool(data.get("use_regex", False)),
             case_sensitive=bool(data.get("case_sensitive", False)),
-            file_types=normalize_file_types(data.get("file_types")),
+            file_types=file_types,
             exclude_options=exclude_options,
+            filenames_only=filenames_only,
         )
 
     def cache_key(self) -> dict[str, Any]:

@@ -151,17 +151,68 @@
           <aside class="flex w-96 shrink-0 flex-col bg-bg-surface">
             <div data-tour="texture-opt-options"  class="min-h-0 flex-1 overflow-y-auto custom-scrollbar p-4">
               <div class="space-y-2">
-                <div class="rounded-lg border p-3 text-xs"
-                  :class="toolStatus.available ? 'bg-accent-success/10 border-accent-success/20 text-accent-success' : 'bg-accent-danger/10 border-accent-danger/20 text-accent-danger'">
-                  <div class="font-bold">{{ toolStatus.available ? t('dialog.texture_opt.tool_ready', '工具已就绪') : t('dialog.texture_opt.tool_not_ready', '工具未就绪') }}</div>
-                  <div class="mt-1 break-all opacity-90">{{ toolStatus.message || t('dialog.texture_opt.checking_environment', '正在检测环境...') }}</div>
-                  <div v-if="toolStatus.resolved_path" class="mt-2 break-all text-xs opacity-70">{{ toolStatus.resolved_path }}</div>
+                <!-- 三档转换工具状态：就绪徽标随所选档位（后端按 encoder_backend 判定并给出明细） -->
+                <div class="rounded-lg border border-border-base/10 bg-bg-overlay/5 p-3 text-xs">
+                  <div class="flex items-center justify-between gap-2">
+                    <div class="font-bold">{{ t('dialog.texture_opt.encoder_status_title', '转换档位工具') }}</div>
+                    <span v-tooltip="toolStatus.message || t('dialog.texture_opt.checking_environment', '正在检测环境...')"
+                      class="shrink-0 rounded px-1.5 py-0.5 font-bold"
+                      :class="toolStatus.available ? 'bg-accent-success/15 text-accent-success' : 'bg-accent-danger/15 text-accent-danger'">
+                      {{ toolStatus.available ? t('dialog.texture_opt.tool_ready', '工具已就绪') : t('dialog.texture_opt.tool_not_ready', '工具未就绪') }}
+                    </span>
+                  </div>
+                  <div class="mt-2 space-y-2">
+                    <div v-for="row in textureStore.encoderRows" :key="row.backend" class="flex items-start gap-2">
+                      <div class="min-w-0 flex-1">
+                        <div class="flex items-center gap-1.5">
+                          <span class="font-bold text-text-main">{{ row.label }}</span>
+                          <span :class="row.available ? 'text-accent-success' : (row.checked ? 'text-accent-danger' : 'text-text-dim')">{{ row.statusText }}</span>
+                        </div>
+                        <div v-if="row.detail" class="mt-0.5 break-all opacity-80">{{ row.detail }}</div>
+                      </div>
+                      <button v-if="row.actionLabel && !isBusy" type="button"
+                        class="shrink-0 rounded-md border border-border-base/15 bg-bg-overlay/5 px-2 py-1 font-bold text-text-dim transition-colors hover:text-text-main"
+                        @click="textureStore.downloadEncoder(row.backend)" >
+                        {{ row.actionLabel }}
+                      </button>
+                    </div>
+                  </div>
+                  <!-- 按机器容量给出的编码方案：探测结果 + 手动覆盖 + 采样实测（用户可见可控） -->
+                  <div v-if="textureStore.machinePlan" class="mt-2 border-t border-border-base/10 pt-2">
+                    <div class="flex items-center gap-1.5">
+                      <span class="font-bold text-text-main">{{ t('dialog.texture_opt.plan_title', '本机方案') }}</span>
+                      <span class="rounded bg-bg-overlay/10 px-1.5 py-0.5 text-[10px] font-bold opacity-80">{{ textureStore.planSourceLabel }}</span>
+                      <span class="opacity-80">{{ textureStore.machinePlan.gpuText }}</span>
+                    </div>
+                    <div class="mt-0.5 break-all opacity-80">
+                      {{ t('dialog.texture_opt.plan_effective', '生效：{workers}（{tier}）', { workers: textureStore.machinePlan.workersText, tier: textureStore.machinePlan.recommendedLabel }) }}
+                    </div>
+                    <div v-if="textureStore.machinePlan.reason && textureStore.machinePlan.showReason" class="mt-0.5 break-all opacity-60">{{ textureStore.machinePlan.reason }}</div>
+                    <div class="mt-1.5 flex items-end gap-1.5">
+                      <div class="min-w-0 flex-1">
+                        <CommonSelect v-model="gpuOverride" :label="t('dialog.texture_opt.workers_gpu_label', 'GPU 分片')" :options="workerOverrideOptions" />
+                      </div>
+                      <div class="min-w-0 flex-1">
+                        <CommonSelect v-model="cpuOverride" :label="t('dialog.texture_opt.workers_cpu_label', 'CPU 分片')" :options="workerOverrideOptions" />
+                      </div>
+                      <button type="button" :disabled="textureStore.benchmarkRunning || isBusy"
+                        class="shrink-0 rounded-md border border-border-base/15 bg-bg-overlay/5 px-2 py-1.5 text-xs font-bold text-text-dim transition-colors hover:text-text-main disabled:opacity-50"
+                        @click="textureStore.saveWorkerOverrides(gpuOverride, cpuOverride)">
+                        {{ t('dialog.texture_opt.workers_save', '保存') }}
+                      </button>
+                    </div>
+                    <div class="mt-1.5 flex items-center gap-1.5">
+                      <button type="button" :disabled="benchmarkUnavailable"
+                        class="flex-1 rounded-md border border-border-base/15 bg-bg-overlay/5 px-2 py-1.5 text-xs font-bold text-text-dim transition-colors hover:text-text-main disabled:opacity-50"
+                        @click="textureStore.runWorkerBenchmark()">
+                        {{ textureStore.benchmarkRunning ? t('dialog.texture_opt.benchmark_running', '基准实测中…') : t('dialog.texture_opt.benchmark_start', '采样实测（用已启用模组贴图测最优分片）') }}
+                      </button>
+                    </div>
+                    <div v-if="texconvMissing" class="mt-1 break-all text-[11px] text-accent-warning/80">{{ t('dialog.texture_opt.benchmark_needs_texconv', '采样基准需要快速档 texconv，请先在上方下载。') }}</div>
+                    <div v-if="textureStore.benchmarkMessage" class="mt-1 break-all text-[11px] opacity-70">{{ textureStore.benchmarkMessage }}</div>
+                    <div class="mt-1 text-[11px] opacity-50">{{ t('dialog.texture_opt.workers_hint', '0/自动 = 跟随推荐；手动值对所有转换任务生效并持久保存。采样实测会真实编码一小批启用模组的贴图（只读源文件，输出写临时目录），约需几十秒。') }}</div>
+                  </div>
                 </div>
-
-                <button v-if="!toolStatus.available && !isBusy" @click="textureStore.downloadTool()"
-                  class="w-full rounded-xl bg-bg-overlay/10 py-2 text-sm font-bold transition-colors hover:bg-bg-overlay/10" >
-                  {{ t('dialog.texture_opt.download_todds', '下载 todds') }}
-                </button>
 
                 <section class="modal-section space-y-3 p-3">
                   <h3 class="text-xs font-black uppercase tracking-widest text-text-main">{{ t('dialog.texture_opt.scope_title', '处理范围') }}</h3>
@@ -180,6 +231,10 @@
                       { label: 'DDS', value: 'dds' },
                       { label: 'ZSTD（Image Opt）', value: 'zstd' }
                     ]"
+                  />
+                  <CommonSelect :label="t('dialog.texture_opt.encoder_backend_label', '转换档位')" v-model="config.encoder_backend" @change="saveConfig"
+                    :description="t('dialog.texture_opt.encoder_backend_desc', '自动：按本机探测结果选档（GPU 编码可用选快速档，否则回退标准档），探测详情见上方「转换档位工具」卡。\n标准：画质最好，转换耗时最长。适合贴图不多、或希望画质零妥协的情况。\n中等：画质接近标准档，日常游玩难以分辨；原尺寸转换时耗时居中，开启缩放时可能长于标准档。\n快速：转换最快，画质略低但日常游玩难以看出差别。适合贴图很多、想尽快完成转换的情况。')"
+                    :options="encoderBackendOptions"
                   />
                   <div v-if="isZstdMode && !isImageOptEnabled" class="rounded-lg border border-accent-warning/25 bg-accent-warning/10 p-2 text-xs text-accent-warning">
                     <div class="flex items-start gap-2">
@@ -227,7 +282,7 @@
                     v-model="cleanZstdMode" @change="saveConfig" mini />
                   <div class="grid grid-cols-2 gap-2">
                     <button type="button" class="inline-flex min-w-0 items-center justify-center gap-1 rounded-md border border-accent-warning/25 px-2 py-1 text-xs font-bold text-accent-warning transition-colors hover:bg-accent-warning/10 disabled:cursor-not-allowed disabled:opacity-50"
-                      :disabled="!toolStatus.available || isBusy" @click="handleCleanResidue" v-tooltip="residueCleanButtonLabel">
+                      :disabled="isBusy" @click="handleCleanResidue" v-tooltip="residueCleanButtonLabel">
                       <BrushCleaning class="size-3.5 shrink-0" />
                     <span class="truncate">{{ residueCleanButtonLabel }}</span>
                   </button>
@@ -251,7 +306,7 @@
                     <ScanSearch class="w-4 h-4 shrink-0" />
                     <span class="min-w-0 truncate whitespace-nowrap text-[clamp(0.7rem,9cqw,1rem)]">{{ t('dialog.texture_opt.scan_stats', '扫描统计') }}</span>
                   </button>
-                  <button data-tour="texture-opt-clean" @click="handleCleanGenerated" :disabled="!toolStatus.available || isBusy"
+                  <button data-tour="texture-opt-clean" @click="handleCleanGenerated" :disabled="isBusy"
                     class="flex min-w-0 flex-1 basis-0 @container items-center justify-center gap-2 rounded-xl border border-accent-warning/30 bg-accent-warning/10 py-2.5 font-bold text-accent-warning transition-all hover:scale-102 active:scale-95 cursor-pointer disabled:cursor-not-allowed disabled:opacity-50"
                     v-tooltip="cleanButtonLabel">
                     <BrushCleaning class="w-4 h-4 shrink-0" />
@@ -336,7 +391,7 @@
                         @click="handleOpenTextureFolder(item)" v-tooltip="t('common.action.open_containing_folder', '打开所在目录')" >
                         <FolderOpen class="w-4 h-4" />
                       </button>
-                      <button v-if="getFailedItemLogPath(item)" v-tooltip="t('dialog.texture_opt.open_todds_log', '打开 todds 日志')"
+                      <button v-if="getFailedItemLogPath(item)" v-tooltip="t('dialog.texture_opt.open_todds_log', '打开编码器日志')"
                         class="rounded-lg border border-border-base/10 bg-bg-overlay/5 p-1.5 text-text-dim transition-colors hover:text-text-main"
                         @click="handleOpenToddsLog(item)" >
                         <ScrollText class="w-4 h-4" />
@@ -517,6 +572,31 @@ const processModeOptions = computed(() => [
   { label: t('dialog.texture_opt.process.all_skip_existing', '只处理新增贴图（增量）'), value: 'all_skip_existing' },
   { label: t('dialog.texture_opt.process.scaled_only_overwrite', '只处理可缩放图片（覆盖）'), value: 'scaled_only_overwrite' },
 ])
+const encoderBackendOptions = computed(() => [
+  { label: t('dialog.texture_opt.encoder_backend.auto', '自动（按本机推荐）'), value: 'auto', desc: t('dialog.texture_opt.encoder_backend_auto_desc', '按本机探测自动选档：快速档工具齐备且 GPU 编码可用时选快速档，否则回退标准档；机器能力探测结果展示在上方「转换档位工具」卡里。') },
+  { label: t('dialog.texture_opt.encoder_backend.todds', '标准'), value: 'todds', desc: t('dialog.texture_opt.encoder_backend_todds_desc', '画质最好，转换耗时最长。适合贴图不多、或希望画质零妥协的情况。') },
+  { label: t('dialog.texture_opt.encoder_backend.nvtt', '中等'), value: 'nvtt', desc: t('dialog.texture_opt.encoder_backend_nvtt_desc', '画质接近标准档，日常游玩难以分辨；原尺寸转换时耗时居中，开启缩放时可能长于标准档。') },
+  { label: t('dialog.texture_opt.encoder_backend.texconv', '快速'), value: 'texconv', desc: t('dialog.texture_opt.encoder_backend_texconv_desc', '转换最快，画质略低但日常游玩难以看出差别。适合贴图很多、想尽快完成转换的情况。') },
+])
+// 分片数手动覆盖：0 = 自动（跟随采样实测推荐/默认）；保存后持久化，对所有转换任务生效
+const gpuOverride = ref(0)
+const cpuOverride = ref(0)
+const workerOverrideOptions = computed(() => [
+  { label: t('dialog.texture_opt.workers_auto', '自动（跟随推荐）'), value: 0 },
+  ...Array.from({ length: 12 }, (_, index) => ({ label: String(index + 1), value: index + 1 })),
+])
+watch(
+  () => textureStore.encoderStatus?.plan?.overrides,
+  (overrides) => {
+    gpuOverride.value = Number(overrides?.gpu_workers || 0)
+    cpuOverride.value = Number(overrides?.cpu_workers || 0)
+  },
+  { immediate: true, deep: true },
+)
+// 采样基准固定由快速档 texconv 承担（分片梯度只对它的 GPU/CPU 池有意义）
+const texconvRow = computed(() => textureStore.encoderRows.find(row => row.backend === 'texconv'))
+const texconvMissing = computed(() => !!texconvRow.value?.checked && !texconvRow.value?.available)
+const benchmarkUnavailable = computed(() => textureStore.benchmarkRunning || isBusy.value || texconvMissing.value)
 const scaleFactorOptions = computed(() => [
   { label: t('ui.texture_opt.scale.none', '不缩放'), value: 1.0 },
   { label: '80%', value: 0.8 },
@@ -865,6 +945,7 @@ const closeModal = () => {
 const saveConfig = async () => {
   await appStore.saveSetting('texture_opt', config.value)
   await textureStore.checkToolStatus()
+  await textureStore.checkEncoderStatus()
 }
 
 const getTargetIds = () => {
@@ -987,7 +1068,7 @@ const openTextureModMenu = (event, item) => {
     {
       label: t('dialog.texture_opt.menu.clean_generated', '清理已生成'),
       icon: BrushCleaning,
-      disabled: isBusy.value || !toolStatus.value.available || !item?.mod_path,
+      disabled: isBusy.value || !item?.mod_path,
       children: [
         { label: t('dialog.texture_opt.menu.clean_dds_only', '只清理 DDS'), icon: BrushCleaning, action: () => handleCleanSingleMod(item, 'dds') },
         { label: t('dialog.texture_opt.menu.clean_zstd_only', '只清理 ZSTD'), icon: BrushCleaning, action: () => handleCleanSingleMod(item, 'zstd') },
@@ -1022,7 +1103,7 @@ const openTextureFailedItemMenu = (event, item) => {
   contextMenuStore.open(event, [
     { label: t('common.action.open_file', '打开文件'), icon: FileText, disabled: !(item?.file_path || (item?.mod_path && item?.rel_path)), action: () => handleOpenTextureFile(item) },
     { label: t('common.action.open_containing_folder', '打开所在目录'), icon: FolderOpen, disabled: !(item?.file_path || (item?.mod_path && item?.rel_path)), action: () => handleOpenTextureFolder(item) },
-    { label: t('dialog.texture_opt.open_todds_log', '打开 todds 日志'), icon: ScrollText, disabled: !getFailedItemLogPath(item), action: () => handleOpenToddsLog(item) },
+    { label: t('dialog.texture_opt.open_todds_log', '打开编码器日志'), icon: ScrollText, disabled: !getFailedItemLogPath(item), action: () => handleOpenToddsLog(item) },
     { divider: true },
     { label: t('dialog.texture_opt.menu.add_file_exclusion', '加入文件排除'), icon: Plus, disabled: !item?.mod_path || !item?.rel_path, action: () => handleAddFailedItemExclusion(item) },
     { divider: true },
@@ -1051,7 +1132,12 @@ const handleCancel = async () => {
 
 watch(() => appStore.uiState.showTextureOptModal, (visible) => {
   if (visible) {
+    // 配置里没有档位时补默认值，避免下拉框空白（默认档位）
+    if (!config.value?.encoder_backend) {
+      config.value.encoder_backend = 'todds'
+    }
     textureStore.checkToolStatus()
+    textureStore.checkEncoderStatus()
     textureStore.loadResultHistory()
     textureStore.loadExclusions()
   }

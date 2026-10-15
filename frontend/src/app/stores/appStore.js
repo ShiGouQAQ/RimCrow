@@ -381,6 +381,7 @@ export const useAppStore = defineStore('app', () => {
       max_source_dimension: 2048,   // 最长边高于该值时不参与缩放
       zstd_clean_old_dds: false,    // 生成 ZSTD 成功后是否清理旧 DDS
       clean_output_format: 'dds',   // 清理格式：dds 或 zstd
+      encoder_backend: 'todds',     // 转换档位：todds=标准 / nvtt=中等 / texconv=快速，默认标准档（对存量用户无行为变化）
     },
 
     // --- 高级 (Advanced) ---

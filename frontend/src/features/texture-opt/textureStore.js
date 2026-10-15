@@ -39,6 +39,13 @@ export const useTextureStore = defineStore('texture', () => {
   const taskStore = useTaskStore()
   let toolStatusRefreshTimer = null
 
+  // 三档转换工具（标准 todds / 中等 nvtt / 快速 texconv）的展示顺序与工具名
+  const ENCODER_TIERS = [
+    { backend: 'todds', tool: 'todds' },
+    { backend: 'nvtt', tool: 'nvtt' },
+    { backend: 'texconv', tool: 'texconv' },
+  ]
+
   const createEmptyTextureStat = () => ({
     mod_path: '',
     mod_name: '',
@@ -319,6 +326,13 @@ export const useTextureStore = defineStore('texture', () => {
     message_params: {},
   })
 
+  // 三档转换工具状态（texture_get_encoder_status 回包的 data 层：encoders / machine / plan）
+  const encoderStatus = ref({
+    encoders: {},
+    machine: null,
+    plan: null,
+  })
+
   // === 动作 Actions ===
   const bindTaskId = (payload, kind) => {
     const taskId = payload?.task_id || payload?.id || ''
@@ -522,10 +536,12 @@ export const useTextureStore = defineStore('texture', () => {
     return false
   }
 
-  const isToddsDownloadPayload = (payload = {}) => {
+  // 转换工具（todds/texconv）下载完成时刷新全部就绪状态：
+  // scheduleToolStatusRefresh 的刷新链同时覆盖 toolStatus、三档状态与本机方案
+  const isTextureToolDownloadPayload = (payload = {}) => {
     const filename = String(payload.metrics?.filename || '').toLowerCase()
     const filePath = String(payload.metrics?.file_path || '').toLowerCase()
-    return filename.startsWith('todds_') || filePath.includes('todds')
+    return ['todds', 'texconv'].some(name => filename.startsWith(name) || filePath.includes(name))
   }
 
   const scheduleToolStatusRefresh = (attempt = 0) => {
@@ -535,6 +551,8 @@ export const useTextureStore = defineStore('texture', () => {
     }
     toolStatusRefreshTimer = window.setTimeout(async () => {
       await checkToolStatus()
+      // 编码器状态与工具状态一起刷新，下载完成后三行状态同步更新
+      await checkEncoderStatus()
       if (!toolStatus.value.available && attempt < 5) {
         scheduleToolStatusRefresh(attempt + 1)
       }
@@ -557,23 +575,198 @@ export const useTextureStore = defineStore('texture', () => {
     }
   }
 
-  // 2. 触发自动下载工具
-  const downloadTool = async () => {
+  // 2.5 档位中文名（面板与设置页共用）
+  const encoderDisplayLabel = (backend) => {
+    if (backend === 'auto') return t('dialog.texture_opt.encoder_backend.auto', '自动（按本机推荐）')
+    if (backend === 'nvtt') return t('dialog.texture_opt.encoder_backend.nvtt', '中等')
+    if (backend === 'texconv') return t('dialog.texture_opt.encoder_backend.texconv', '快速')
+    return t('dialog.texture_opt.encoder_backend.todds', '标准')
+  }
+
+  // 2.6 按机器容量给出的编码方案（get_encoder_status 回包的 machine/plan 层，对用户可见）。
+  // 档位与分片文案都按 effective_backend（用户所选档位，缺失时回退 auto 落点）解析，
+  // 保证「生效」一行反映实际将运行的编码器，而不是恒显 auto 的落点。
+  const machinePlan = computed(() => {
+    const machine = encoderStatus.value?.machine
+    const plan = encoderStatus.value?.plan
+    if (!machine || !plan) return null
+    const gpuOk = machine.gpu_directcompute === true
+    const gpuUnknown = machine.gpu_directcompute == null
+    const effectiveBackend = String(plan.effective_backend || plan.backend || 'todds')
+    const workersText = effectiveBackend === 'todds'
+      ? t('dialog.texture_opt.plan_workers_todds', 'todds 使用内置多线程，无分片设置')
+      : effectiveBackend === 'nvtt'
+        ? t('dialog.texture_opt.plan_workers_nvtt', '编码分片 {n}（上限 6）', { n: Number(plan.nvtt_shards || 0) })
+        : t('dialog.texture_opt.plan_workers', 'GPU 分片 {gpu} + CPU 分片 {cpu}', { gpu: plan.gpu_workers, cpu: plan.cpu_workers })
+    return {
+      gpuText: gpuUnknown
+        ? t('dialog.texture_opt.plan_gpu_unknown', 'GPU 探测未完成（未安装快速档时属预期）')
+        : gpuOk
+          ? t('dialog.texture_opt.plan_gpu_ok', 'GPU 编码可用（DirectCompute 实测通过）')
+          : t('dialog.texture_opt.plan_gpu_bad', 'GPU 编码不可用，透明通道贴图走 CPU'),
+      recommendedLabel: encoderDisplayLabel(effectiveBackend),
+      effectiveBackend,
+      selectedBackend: String(plan.selected_backend || 'auto'),
+      effectiveGpu: Number(plan.gpu_workers || 0),
+      effectiveCpu: Number(plan.cpu_workers || 0),
+      nvttShards: Number(plan.nvtt_shards || 0),
+      source: String(plan.source || 'default'),
+      overrides: plan.overrides || { gpu_workers: 0, cpu_workers: 0 },
+      workersText,
+      // reason 解释的是 auto 的落点取舍，用户显式选档时不再展示
+      reason: String(plan.reason || ''),
+      showReason: String(plan.selected_backend || 'auto') === 'auto',
+      qualityNote: String(plan.quality_note || ''),
+      texconvVersion: String(plan.texconv_version || ''),
+      cpuLogical: Number(machine.cpu_logical || 0),
+    }
+  })
+
+  // 生效分片数的来源徽标：手动设置 > 采样实测 > 默认推荐
+  const planSourceLabel = computed(() => {
+    const source = String(encoderStatus.value?.plan?.source || 'default')
+    if (source === 'manual') return t('dialog.texture_opt.plan_source_manual', '手动设置')
+    if (source === 'benchmark') return t('dialog.texture_opt.plan_source_benchmark', '采样实测')
+    return t('dialog.texture_opt.plan_source_default', '默认推荐')
+  })
+
+  // 2.7 三档转换工具状态（纯读）
+  const checkEncoderStatus = async () => {    if (!window.pywebview) return
+    try {
+      const res = await window.pywebview.api.texture_get_encoder_status(appStore.settings.texture_opt)
+      if (checkResult(res, t('check.texture.encoder_status', '检查转换档位工具'), false)) {
+        encoderStatus.value = { ...(res.data || {}) }
+      }
+    } catch (e) {
+      console.error('检查转换档位工具状态失败:', e)
+    }
+  }
+
+  // 2.8 采样基准（用户手动触发）与分片数手动覆盖
+  const benchmarkRunning = ref(false)
+  const benchmarkMessage = ref('')
+
+  const runWorkerBenchmark = async () => {
+    if (!window.pywebview || benchmarkRunning.value) return
+    benchmarkRunning.value = true
+    benchmarkMessage.value = t('toast.texture.benchmark_starting', '正在启动采样基准…')
+    try {
+      const res = await window.pywebview.api.texture_run_worker_benchmark(appStore.settings.texture_opt)
+      if (!checkResult(res, t('check.texture.benchmark_start', '启动采样基准'))) {
+        benchmarkRunning.value = false
+        benchmarkMessage.value = ''
+        return
+      }
+      const taskId = String(res.data?.task_id || '')
+      if (!taskId) {
+        benchmarkRunning.value = false
+        return
+      }
+      for (;;) {
+        await new Promise((resolve) => setTimeout(resolve, 1200))
+        const poll = await window.pywebview.api.texture_get_worker_benchmark(taskId)
+        if (!checkResult(poll, t('check.texture.benchmark_poll', '查询基准进度'), false)) break
+        const payload = poll.data || {}
+        benchmarkMessage.value = String(payload.message || '')
+        const status = String(payload.status || '')
+        if (status === 'completed') {
+          toast.success(t('toast.texture.benchmark_done', '采样基准完成'))
+          break
+        }
+        if (status === 'failed' || status === 'cancelled') {
+          toast.error(benchmarkMessage.value || t('toast.texture.benchmark_failed', '采样基准未完成'))
+          break
+        }
+      }
+    } catch (e) {
+      console.error('采样基准执行失败:', e)
+    } finally {
+      benchmarkRunning.value = false
+      await checkEncoderStatus()
+    }
+  }
+
+  const saveWorkerOverrides = async (gpuWorkers, cpuWorkers) => {
     if (!window.pywebview) return
     appStore.isLoading = true
     try {
-      const res = await window.pywebview.api.texture_prepare_download(appStore.settings.texture_opt)
-      if (res.status === 'success') {
-        if (!res.data.already_ready) {
-          toast.info(t('toast.texture.tool_download_started_watch_status', '已启动 todds 下载任务，请留意底部状态栏。'))
-          scheduleToolStatusRefresh(0)
-        } else {
-          toast.success(t('toast.texture.tool_ready_no_download', 'todds 已就绪，无需下载'))
-          await checkToolStatus()
-        }
-      } else {
-        showUserErrorToast(res, t('errors.texture.prepare_tool_failed', '准备贴图工具失败。请检查网络连接、代理设置、工具目录权限和磁盘空间。'))
+      const res = await window.pywebview.api.texture_set_worker_overrides(Number(gpuWorkers) || 0, Number(cpuWorkers) || 0, appStore.settings.texture_opt)
+      if (checkResult(res, t('check.texture.worker_overrides', '保存分片设置'))) {
+        if (res.data) encoderStatus.value = { ...(res.data || {}) }
+        toast.success(t('toast.texture.worker_overrides_saved', '分片设置已保存'))
       }
+    } catch (e) {
+      console.error('保存分片设置失败:', e)
+    } finally {
+      appStore.isLoading = false
+    }
+  }
+
+  // 2.7 面板与设置页共用的三行状态；状态回包前 checked=false，只显示「检查中」不误报「不可用」
+  const encoderRows = computed(() => {
+    const encoders = encoderStatus.value?.encoders || {}
+    return ENCODER_TIERS.map((tier) => {
+      const info = encoders[tier.backend]
+      const checked = !!info
+      const available = !!info?.available
+      return {
+        backend: tier.backend,
+        label: encoderDisplayLabel(tier.backend),
+        checked,
+        available,
+        statusText: available
+          ? t('dialog.texture_opt.encoder_available', '可用')
+          : (checked ? t('dialog.texture_opt.encoder_unavailable', '不可用') : t('common.status.checking', '检查中')),
+        detail: !checked
+          ? ''
+          : (available
+            ? String(info.resolved_path || '')
+            : (tier.backend === 'nvtt'
+              ? t('dialog.texture_opt.encoder_missing_nvtt', '未检测到中等档所需的程序。可前往官方页面下载安装后返回此处。')
+              : t('dialog.texture_opt.encoder_missing', '未在本机找到 {name} 程序。', { name: tier.tool }))),
+        actionLabel: (checked && !available)
+          ? (tier.backend === 'nvtt'
+            ? t('dialog.texture_opt.encoder_open_site', '打开官网')
+            : (tier.backend === 'texconv'
+              ? t('dialog.texture_opt.download_texconv', '下载 texconv')
+              : t('dialog.texture_opt.download_todds', '下载 todds')))
+          : '',
+      }
+    })
+  })
+
+  // 2.8 下载缺失的转换工具；NVTT 不自动下载，改为打开官方页面
+  const downloadEncoder = async (backend) => {
+    if (!window.pywebview) return
+    const target = String(backend || 'todds')
+    const label = encoderDisplayLabel(target)
+    const failureText = t('errors.texture.tool_download_failed', '启动贴图工具下载失败。请检查网络连接、代理设置和工具目录写入权限。')
+    appStore.isLoading = true
+    try {
+      const res = await window.pywebview.api.texture_prepare_encoder_download(target, appStore.settings.texture_opt)
+      if (res.status !== 'success') {
+        showUserErrorToast(res, failureText)
+        return
+      }
+      const data = res.data || {}
+      if (data.already_ready) {
+        toast.success(t('toast.texture.encoder_ready', '{name} 已就绪', { name: label }))
+        await checkEncoderStatus()
+        return
+      }
+      if (data.download_kind === 'external' && data.url) {
+        if (window.pywebview.api.open_external_url) {
+          await window.pywebview.api.open_external_url(data.url)
+        }
+        toast.info(t('toast.texture.encoder_site_opened', '已打开官方页面，安装完成后返回此处即可识别。'))
+        await checkEncoderStatus()
+        return
+      }
+      toast.info(t('toast.texture.encoder_download_started', '已启动 {name} 下载任务，请留意底部状态栏。', { name: label }))
+      scheduleToolStatusRefresh(0)
+    } catch (e) {
+      console.error('下载转换档位工具失败:', e)
+      showUserErrorToast(e, failureText)
     } finally {
       appStore.isLoading = false
     }
@@ -662,7 +855,7 @@ export const useTextureStore = defineStore('texture', () => {
 
   const handleDownloadEvent = (payload) => {
     if (!payload || payload.status !== 'success') return
-    if (!isToddsDownloadPayload(payload)) return
+    if (!isTextureToolDownloadPayload(payload)) return
     scheduleToolStatusRefresh(0)
   }
 
@@ -806,11 +999,12 @@ export const useTextureStore = defineStore('texture', () => {
   return {
     // 任务状态
     isAnalyzing, isOptimizing, currentTaskId, currentAnalysisTaskId, currentOptimizationTaskId,
+    benchmarkRunning, benchmarkMessage, runWorkerBenchmark, saveWorkerOverrides,
     // 数据与视图状态
-    modsData, globalSummary, progressState, viewMode, toolStatus,
+    modsData, globalSummary, progressState, viewMode, toolStatus, encoderStatus, encoderRows, machinePlan, planSourceLabel,
     resultHistory, textureExclusions, isResultDrawerOpen, selectedResultPath,
     // 任务动作
-    checkToolStatus, downloadTool, startAnalysis, startOptimization, cancelCurrentTask, handleProgressEvent, handleDownloadEvent,
+    checkToolStatus, checkEncoderStatus, downloadEncoder, startAnalysis, startOptimization, cancelCurrentTask, handleProgressEvent, handleDownloadEvent,
     // 结果与排除项
     loadResultHistory, loadExclusions, isModExcluded, isFileExcluded, toggleModExclusion, toggleFileExclusion, getRowKey,
   }

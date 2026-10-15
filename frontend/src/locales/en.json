@@ -1001,10 +1001,12 @@
         "delete_orphan": "Delete orphan {format} task has been queued",
         "optimize": "Texture optimization task has been queued"
       },
-      "todds_found": "Found todds executable",
       "tool_download_started": "Tool download task started",
       "tool_ready": "Tool is ready",
-      "tool_unavailable": "The texture tool is not available. Check tool settings, download status, or file permissions."
+      "tool_unavailable": "The texture tool is not available. Check tool settings, download status, or file permissions.",
+      "convert_preview_done": "Preview finished (nothing written)",
+      "tool_install_required": "This tool must be installed from the vendor site; come back here once installed and it will be detected",
+      "encoder_found": "Found {name} executable"
     },
     "theme": {
       "delete_failed": "Failed to delete the custom theme. Check whether the theme file is in use or cannot be deleted.",
@@ -1347,7 +1349,11 @@
       "load_result_history": "Load texture result history",
       "start_analysis": "Start texture analysis",
       "start_task": "Start optimization task",
-      "tool_status": "Check texture tool"
+      "tool_status": "Check texture tool",
+      "encoder_status": "Check encoder tiers",
+      "benchmark_poll": "Query benchmark progress",
+      "benchmark_start": "Start sampling benchmark",
+      "worker_overrides": "Save shard settings"
     },
     "update": {
       "check": "Check for updates",
@@ -2892,7 +2898,7 @@
       "no_matched_mod_exclusions": "No matching excluded mods",
       "no_mod_exclusions": "No mod exclusions",
       "no_progress": "No task progress",
-      "open_todds_log": "Open todds log",
+      "open_todds_log": "Open encoder log",
       "output_format_desc": "DDS: RimWorld 1.6 and later can read it natively. Earlier versions usually need Graphics Settings+ to load .dds files.\nZSTD: generate DDS first, then compress it into .dds.zstd to mainly save disk space. Requires Image Opt for the game to read it.",
       "output_format_label": "Output format",
       "path_exclusion_placeholder": "Paste full file paths, one per line",
@@ -2950,7 +2956,45 @@
         "png": "PNG only",
         "zstd": "ZSTD only"
       },
-      "vram_estimate": "Estimated VRAM usage"
+      "vram_estimate": "Estimated VRAM usage",
+      "download_texconv": "Download texconv",
+      "encoder_available": "Available",
+      "encoder_backend": {
+        "nvtt": "Medium",
+        "texconv": "Fast",
+        "todds": "Standard",
+        "auto": "Auto (recommended for this machine)"
+      },
+      "encoder_backend_desc": "Auto: picks a tier from local detection (fast tier when its tools are present and GPU encoding works, otherwise the standard tier); detection details are shown in the encoder card above.\nStandard: best quality, slowest conversion. For few textures or when quality matters most.\nMedium: quality close to standard, hard to tell apart in play; average speed at original size, and may be slower than standard when scaling is on.\nFast: fastest conversion, slightly lower quality that is hard to notice in play. For many textures or when you want it done quickly.",
+      "encoder_backend_label": "Encoder tier",
+      "encoder_backend_nvtt_desc": "Quality close to standard, hard to tell apart in play; average speed at original size, and may be slower than standard when scaling is on.",
+      "encoder_backend_texconv_desc": "Fastest conversion, slightly lower quality that is hard to notice in play. For many textures or when you want it done quickly.",
+      "encoder_backend_todds_desc": "Best quality, slowest conversion. For few textures or when quality matters most.",
+      "encoder_missing": "Could not find {name} on this machine.",
+      "encoder_missing_nvtt": "The medium-tier program was not detected. Install it from the vendor page and come back here.",
+      "encoder_open_site": "Open vendor site",
+      "encoder_status_title": "Encoder tiers",
+      "encoder_unavailable": "Unavailable",
+      "encoder_backend_auto_desc": "Auto picks a tier from local detection: the fast tier when its tools are present and GPU encoding works, otherwise the standard tier; detection details are shown in the encoder card above.",
+      "plan_gpu_bad": "GPU encoding unavailable; alpha-channel textures fall back to CPU",
+      "plan_gpu_ok": "GPU encoding available (DirectCompute verified)",
+      "plan_gpu_unknown": "GPU detection not finished (expected when the fast tier is not installed)",
+      "plan_title": "Plan for this machine",
+      "plan_workers": "GPU shards {gpu} + CPU shards {cpu}",
+      "plan_workers_todds": "todds uses its built-in thread pool; no shard settings",
+      "benchmark_running": "Benchmark running…",
+      "benchmark_start": "Sample benchmark (measure optimal shards using enabled mods' textures)",
+      "plan_effective": "Effective: {workers} ({tier})",
+      "plan_source_benchmark": "Benchmarked",
+      "plan_source_default": "Default",
+      "plan_source_manual": "Manual",
+      "workers_auto": "Auto (follow recommendation)",
+      "workers_cpu_label": "CPU shards",
+      "workers_gpu_label": "GPU shards",
+      "workers_hint": "0/auto = follow the recommendation; manual values apply to all conversion tasks and persist. The benchmark truly encodes a small batch of enabled mods' textures (sources are read-only, output goes to a temp folder) and takes about a minute.",
+      "workers_save": "Save",
+      "plan_workers_nvtt": "{n} encode shard(s) (max 6)",
+      "benchmark_needs_texconv": "The sampling benchmark needs the fast tier (texconv). Download it above first."
     },
     "translation_manager": {
       "auto_translate_batch": "Translate missing ({count})",
@@ -3257,13 +3301,19 @@
       "no_analysis_targets": "No mods selected for analysis",
       "no_residue_targets": "No uninstalled residue mod folders containing {format} were found",
       "no_valid_mod_paths": "No valid physical paths were found for the selected mods",
-      "prepare_tool_failed": "Failed to prepare the texture tool. Check the network connection, proxy settings, tool folder permissions, and disk space.",
       "start_analysis_failed": "Failed to start texture analysis. Check the mod path, file permissions, and backend logs, then try again.",
       "start_clean_failed": "Failed to start texture cleanup. Check the mod path, file permissions, and backend logs, then try again.",
       "start_optimize_failed": "Failed to start texture generation. Check the tool settings, mod path, file permissions, and backend logs, then try again.",
       "status_failed": "Failed to read texture tool status. Check the tool path and runtime environment.",
       "task_start_failed": "Failed to start the texture task. Check the selected Mod path, tool status, disk space, and file permissions.",
-      "tool_download_failed": "Failed to start downloading the texture tool. Check the network connection, proxy settings, and tool folder permissions."
+      "tool_download_failed": "Failed to start downloading the texture tool. Check the network connection, proxy settings, and tool folder permissions.",
+      "encoder_status_failed": "Failed to read encoder status. Check the tool folder permissions and retry.",
+      "no_convert_paths": "mod_paths must not be empty",
+      "tasks_read_failed": "Failed to read texture task status. Try again later.",
+      "benchmark_no_targets": "No enabled mods to sample from",
+      "benchmark_query_failed": "Failed to query the texture benchmark task.",
+      "benchmark_start_failed": "Failed to start the texture benchmark. Make sure mods are enabled and texconv is available.",
+      "worker_overrides_failed": "Failed to save shard settings. Check the config file write permissions."
     },
     "update": {
       "action_failed": "Failed to run the update action. Check the network connection, disk space, and install folder permissions.",
@@ -4481,7 +4531,7 @@
       "clean_start": "Starting cleanup for {target_label}",
       "completed_elapsed": "{message}, elapsed {elapsed}",
       "encode_batch": "Generating {output_label}: batch {batch_index}/{batch_total} ({scale_label})",
-      "encode_batch_wait": "Waiting for todds to finish writing batch {batch_index}/{batch_total} ({scale_label})",
+      "encode_batch_wait": "Waiting for the encoder to finish writing batch {batch_index}/{batch_total} ({scale_label})",
       "encode_completed": "{output_label} generation completed{details}",
       "encode_record_batch": "Recording generated files: batch {batch_index}/{batch_total} ({scale_label})",
       "encode_start": "Starting {output_label} generation",
@@ -4502,7 +4552,16 @@
       "tool_download_start": "Downloading todds toolkit",
       "tool_install_start": "todds toolkit downloaded. Extracting...",
       "update_encode_state": "Updating generation state",
-      "write_result": "Writing task result"
+      "write_result": "Writing task result",
+      "texconv_download_start": "Starting texconv encoder download",
+      "texconv_install_start": "texconv encoder downloaded, placing it...",
+      "benchmark_cancelled": "Texture benchmark cancelled",
+      "benchmark_done": "Benchmark complete: recommended GPU shards {gpu} + CPU shards {cpu} (0 = off)",
+      "benchmark_failed": "Texture benchmark failed: {error}",
+      "benchmark_no_samples": "No sampleable textures in enabled mods (PNGs above 256px are required).",
+      "benchmark_round": "Benchmark {index}/{total}: {scope} shards = {value}",
+      "benchmark_scan": "Randomly picking mods and scanning texture samples...",
+      "benchmark_requires_texconv": "The sampling benchmark requires the fast tier (texconv). Download it from the encoder card first: {detail}"
     },
     "title": {
       "file_delete": "Delete Files",
@@ -4895,8 +4954,15 @@
     "texture": {
       "tool_download_done": "Texture tool downloaded: {path}",
       "tool_download_failed": "Texture tool download failed",
-      "tool_download_started_watch_status": "todds download started. Watch the status bar.",
-      "tool_ready_no_download": "todds is ready; no download needed"
+      "texconv_download_done": "texconv download finished: {path}",
+      "texconv_download_failed": "texconv download failed",
+      "encoder_download_started": "Started the {name} download task; watch the status bar.",
+      "encoder_ready": "{name} is ready",
+      "encoder_site_opened": "Vendor page opened; come back here once installed and it will be detected.",
+      "benchmark_done": "Sampling benchmark finished",
+      "benchmark_failed": "Sampling benchmark did not finish",
+      "benchmark_starting": "Starting the sampling benchmark…",
+      "worker_overrides_saved": "Shard settings saved"
     },
     "texture_opt": {
       "image_opt_not_enabled": "Image Opt was not detected in the active mod list. ZSTD textures will still be generated, but the game may not read them.",
@@ -6242,7 +6308,9 @@
         "workshop_db_path": "Workshop database path",
         "workshop_db_path_desc": "Local cache file for the Workshop information database.",
         "workshop_db_url": "Workshop database URL",
-        "workshop_db_url_desc": "Workshop information database used to supplement Mod names, authors, and descriptions. Source: community cache file."
+        "workshop_db_url_desc": "Workshop information database used to supplement Mod names, authors, and descriptions. Source: community cache file.",
+        "encoders_desc": "Texture conversion offers three tiers; the medium tier requires NVIDIA's tool to be installed first.",
+        "encoders_title": "Texture encoder tiers"
       },
       "features": {
         "action_prechecks": "Required checks before key actions",

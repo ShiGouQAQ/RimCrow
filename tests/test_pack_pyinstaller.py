@@ -194,6 +194,7 @@ class TestPackPyInstaller(unittest.TestCase):
         with patch.object(pack_pyinstaller, "__file__", str(self.temp_dir / "pack_pyinstaller.py")), \
              patch("pack_pyinstaller.sys.platform", "darwin"), \
              patch("pack_pyinstaller.create_pyinstaller_hook_dir", return_value=str(self.temp_dir / "hooks")), \
+             patch("pack_pyinstaller._resolve_pyinstaller_output", return_value=self.temp_dir / "dist" / "RimCrow.app"), \
              patch("pack_pyinstaller._run_command_with_log", side_effect=lambda cmd, log_path, env=None: captured.setdefault("cmd", cmd) and 0):
             result = pack_pyinstaller.packApplication(
                 main_file=str(main_file),

@@ -567,6 +567,105 @@ class TestFileSearch(unittest.TestCase):
         self.assertFalse(any(part == "*.xml" for part in command))
         self.assertIn("ThingDef", command)
 
+    # ---- filenames_only（按文件名检索，默认关闭＝上游内容检索原行为）---------
+
+    def test_filenames_only_defaults_do_not_change_content_search(self):
+        plain = SearchRequest.from_payload({"query": "ThingDef", "scope": "current-active"})
+        self.assertFalse(plain.filenames_only)
+        self.assertEqual(plain.file_types, (".xml",))  # 上游默认只有 .xml
+        self.assertTrue(plain.exclude_options["skip_textures"])
+
+        named = SearchRequest.from_payload({"query": "BGPlanet", "filenames_only": True})
+        self.assertTrue(named.filenames_only)
+        # 未指定 file_types 时不按 .xml 收窄；内容检索的三个目录排除改为不生效
+        self.assertEqual(named.file_types, (".",))
+        self.assertFalse(named.exclude_options["skip_textures"])
+        self.assertFalse(named.exclude_options["skip_source"])
+        self.assertFalse(named.exclude_options["skip_languages"])
+        self.assertTrue(named.exclude_options["skip_git"])  # 与内容检索一致保留
+
+        explicit = SearchRequest.from_payload(
+            {
+                "query": "BGPlanet",
+                "filenames_only": True,
+                "file_types": ["png"],
+                "exclude_options": {"skip_textures": True},
+            }
+        )
+        self.assertEqual(explicit.file_types, (".png",))  # 显式传入优先
+        self.assertTrue(explicit.exclude_options["skip_textures"])
+
+    def _make_asset_mod(self, name: str) -> SearchRoot:
+        root = self.temp_dir / name
+        (root / "Textures" / "UI" / "HeroArt").mkdir(parents=True, exist_ok=True)
+        (root / "Textures" / "UI" / "HeroArt" / "BGPlanet.png").write_bytes(b"\x89PNG\r\n")
+        (root / "1.6" / "Assemblies").mkdir(parents=True, exist_ok=True)
+        (root / "1.6" / "Assemblies" / "Tool.dll").write_bytes(b"MZ")
+        (root / "1.6" / "Defs").mkdir(parents=True, exist_ok=True)
+        (root / "1.6" / "Defs" / "Thing.xml").write_text("<Defs/>", encoding="utf-8")
+        return SearchRoot(
+            package_id="author.asset",
+            mod_name=name,
+            store="local",
+            mod_path=str(root),
+            root_path=str(root),
+            root_kind="dir",
+        )
+
+    def test_filenames_only_python_backend_matches_name_then_relative_path(self):
+        root = self._make_asset_mod("AssetMod")
+        backend = PythonStreamingSearchBackend()
+
+        by_name = list(
+            backend.search(
+                SearchRequest.from_payload({"query": "bgplanet", "filenames_only": True}),
+                [root],
+                threading.Event(),
+            )
+        )
+        self.assertEqual(len(by_name), 1)
+        self.assertEqual(by_name[0].line_number, 0)  # 文件名命中无行号
+        self.assertEqual(by_name[0].matched_line, "BGPlanet.png")
+        self.assertEqual(by_name[0].mod_name, "AssetMod")
+
+        by_path = list(
+            backend.search(
+                SearchRequest.from_payload({"query": "HeroArt", "filenames_only": True}),
+                [root],
+                threading.Event(),
+            )
+        )
+        self.assertEqual(len(by_path), 1)
+        self.assertEqual(by_path[0].matched_line, "Textures/UI/HeroArt/BGPlanet.png")
+
+        miss = list(
+            backend.search(
+                SearchRequest.from_payload({"query": "NoSuchFile", "filenames_only": True}),
+                [root],
+                threading.Event(),
+            )
+        )
+        self.assertEqual(miss, [])
+
+    def test_filenames_only_builds_files_command_without_content_flags(self):
+        backend = RipgrepSearchBackend("C:/tools/rg.exe")
+        root = self._make_asset_mod("CmdMod")
+        named = SearchRequest.from_payload(
+            {"query": "BGPlanet", "filenames_only": True, "file_types": [".png"]}
+        )
+        command = backend._build_command(Path("C:/tools/rg.exe"), named, [root])  # noqa: SLF001
+        self.assertIn("--files", command)
+        self.assertNotIn("--json", command)  # --files 没有 JSON 事件流
+        self.assertNotIn("BGPlanet", command)  # 匹配在 Python 侧复核，query 不进命令行
+        self.assertIn("*.png", command)
+
+        # 内容检索命令不受影响：仍是 JSON 模式且 query 作为 pattern
+        plain = SearchRequest.from_payload({"query": "BGPlanet"})
+        content = backend._build_command(Path("C:/tools/rg.exe"), plain, [root])  # noqa: SLF001
+        self.assertIn("--json", content)
+        self.assertIn("BGPlanet", content)
+        self.assertNotIn("--files", content)
+
     def test_get_ripgrep_status_strict_mode_does_not_fallback(self):
         original_mgr_github_module = sys.modules.get("backend.managers.mgr_github")
         fake_mgr_github_module = ModuleType("backend.managers.mgr_github")

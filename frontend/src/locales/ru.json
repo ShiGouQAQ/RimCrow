@@ -1001,10 +1001,12 @@
         "delete_orphan": "Задача удаления бесхозной задачи {format} поставлена ​​в очередь",
         "optimize": "Задача оптимизации текстур поставлена ​​в очередь"
       },
-      "todds_found": "Найден исполняемый файл todds",
       "tool_download_started": "Задача загрузки инструмента запущена",
       "tool_ready": "Инструмент готов",
-      "tool_unavailable": "Инструмент текстур сейчас недоступен. Проверьте настройки инструмента, состояние загрузки или права на файлы."
+      "tool_unavailable": "Инструмент текстур сейчас недоступен. Проверьте настройки инструмента, состояние загрузки или права на файлы.",
+      "convert_preview_done": "[UNTRANSLATED] 预演完成（未写盘）",
+      "tool_install_required": "[UNTRANSLATED] 该工具需从官网下载安装，安装后返回此处即可识别",
+      "encoder_found": "Найден исполняемый файл {name}"
     },
     "theme": {
       "delete_failed": "Не удалось удалить пользовательскую тему. Проверьте, не занят ли файл темы и есть ли права на удаление.",
@@ -1347,7 +1349,11 @@
       "load_result_history": "Загрузить историю результатов текстур",
       "start_analysis": "Начать анализ текстуры",
       "start_task": "Запустить задачу оптимизации",
-      "tool_status": "Инструмент «Проверить текстуру»"
+      "tool_status": "Инструмент «Проверить текстуру»",
+      "encoder_status": "[UNTRANSLATED] 检查转换档位工具",
+      "benchmark_poll": "[UNTRANSLATED] 查询基准进度",
+      "benchmark_start": "[UNTRANSLATED] 启动采样基准",
+      "worker_overrides": "[UNTRANSLATED] 保存分片设置"
     },
     "update": {
       "check": "Проверьте наличие обновлений",
@@ -2892,7 +2898,7 @@
       "no_matched_mod_exclusions": "Нет подходящих исключенных модов.",
       "no_mod_exclusions": "Нет исключений модов",
       "no_progress": "Нет прогресса задачи",
-      "open_todds_log": "Открыть журнал тоддов",
+      "open_todds_log": "Открыть журнал кодировщика",
       "output_format_desc": "DDS: RimWorld 1.6 и более поздние версии могут читать его изначально. Более ранним версиям обычно требуются настройки графики+ для загрузки файлов .dds.\nZSTD: сначала сгенерируйте DDS, затем сожмите его в .dds.zstd, чтобы в основном сэкономить дисковое пространство. Требуется Image Opt, чтобы игра прочитала его.",
       "output_format_label": "Выходной формат",
       "path_exclusion_placeholder": "Вставьте полные пути к файлам, по одному в строке.",
@@ -2950,7 +2956,45 @@
         "png": "Только PNG",
         "zstd": "только ZSTD"
       },
-      "vram_estimate": "Примерное использование видеопамяти"
+      "vram_estimate": "Примерное использование видеопамяти",
+      "download_texconv": "[UNTRANSLATED] 下载 texconv",
+      "encoder_available": "[UNTRANSLATED] 可用",
+      "encoder_backend": {
+        "nvtt": "[UNTRANSLATED] 中等",
+        "texconv": "[UNTRANSLATED] 快速",
+        "todds": "[UNTRANSLATED] 标准",
+        "auto": "[UNTRANSLATED] 自动（按本机推荐）"
+      },
+      "encoder_backend_desc": "[UNTRANSLATED] 自动：按本机探测结果选档（GPU 编码可用选快速档，否则回退标准档），探测详情见上方「转换档位工具」卡。\n标准：画质最好，转换耗时最长。适合贴图不多、或希望画质零妥协的情况。\n中等：画质接近标准档，日常游玩难以分辨；原尺寸转换时耗时居中，开启缩放时可能长于标准档。\n快速：转换最快，画质略低但日常游玩难以看出差别。适合贴图很多、想尽快完成转换的情况。",
+      "encoder_backend_label": "[UNTRANSLATED] 转换档位",
+      "encoder_backend_nvtt_desc": "[UNTRANSLATED] 画质接近标准档，日常游玩难以分辨；原尺寸转换时耗时居中，开启缩放时可能长于标准档。",
+      "encoder_backend_texconv_desc": "[UNTRANSLATED] 转换最快，画质略低但日常游玩难以看出差别。适合贴图很多、想尽快完成转换的情况。",
+      "encoder_backend_todds_desc": "[UNTRANSLATED] 画质最好，转换耗时最长。适合贴图不多、或希望画质零妥协的情况。",
+      "encoder_missing": "[UNTRANSLATED] 未在本机找到 {name} 程序。",
+      "encoder_missing_nvtt": "[UNTRANSLATED] 未检测到中等档所需的程序。可前往官方页面下载安装后返回此处。",
+      "encoder_open_site": "[UNTRANSLATED] 打开官网",
+      "encoder_status_title": "[UNTRANSLATED] 转换档位工具",
+      "encoder_unavailable": "[UNTRANSLATED] 不可用",
+      "encoder_backend_auto_desc": "[UNTRANSLATED] 按本机探测自动选档：快速档工具齐备且 GPU 编码可用时选快速档，否则回退标准档；机器能力探测结果展示在上方「转换档位工具」卡里。",
+      "plan_gpu_bad": "[UNTRANSLATED] GPU 编码不可用，透明通道贴图走 CPU",
+      "plan_gpu_ok": "[UNTRANSLATED] GPU 编码可用（DirectCompute 实测通过）",
+      "plan_gpu_unknown": "[UNTRANSLATED] GPU 探测未完成（未安装快速档时属预期）",
+      "plan_title": "[UNTRANSLATED] 本机方案",
+      "plan_workers": "[UNTRANSLATED] GPU 分片 {gpu} + CPU 分片 {cpu}",
+      "plan_workers_todds": "[UNTRANSLATED] todds 使用内置多线程，无分片设置",
+      "benchmark_running": "[UNTRANSLATED] 基准实测中…",
+      "benchmark_start": "[UNTRANSLATED] 采样实测（用已启用模组贴图测最优分片）",
+      "plan_effective": "Действует: {workers} ({tier})",
+      "plan_source_benchmark": "[UNTRANSLATED] 采样实测",
+      "plan_source_default": "[UNTRANSLATED] 默认推荐",
+      "plan_source_manual": "[UNTRANSLATED] 手动设置",
+      "workers_auto": "[UNTRANSLATED] 自动（跟随推荐）",
+      "workers_cpu_label": "[UNTRANSLATED] CPU 分片",
+      "workers_gpu_label": "[UNTRANSLATED] GPU 分片",
+      "workers_hint": "[UNTRANSLATED] 0/自动 = 跟随推荐；手动值对所有转换任务生效并持久保存。采样实测会真实编码一小批启用模组的贴图（只读源文件，输出写临时目录），约需几十秒。",
+      "workers_save": "[UNTRANSLATED] 保存",
+      "plan_workers_nvtt": "Шардов кодирования: {n} (макс. 6)",
+      "benchmark_needs_texconv": "Для замера нужен быстрый уровень (texconv). Сначала скачайте его выше."
     },
     "translation_manager": {
       "auto_translate_batch": "Перевод отсутствует ({count})",
@@ -3257,13 +3301,19 @@
       "no_analysis_targets": "Моды для анализа не выбраны",
       "no_residue_targets": "Не обнаружено неустановленных папок остатков модов, содержащих {format}.",
       "no_valid_mod_paths": "Для выбранных модов не найдено действительных физических путей.",
-      "prepare_tool_failed": "Не удалось подготовить инструмент текстур. Проверьте сеть, прокси, права на папку инструментов и свободное место.",
       "start_analysis_failed": "Не удалось запустить анализ текстур. Проверьте путь к моду, права доступа к файлам и журналы бэкенда, затем повторите попытку.",
       "start_clean_failed": "Не удалось запустить очистку текстур. Проверьте путь к моду, права доступа к файлам и журналы бэкенда, затем повторите попытку.",
       "start_optimize_failed": "Не удалось запустить создание текстур. Проверьте настройки инструмента, путь к моду, права доступа к файлам и журналы бэкенда, затем повторите попытку.",
       "status_failed": "Не удалось прочитать состояние инструмента текстур. Проверьте путь инструмента и среду запуска.",
       "task_start_failed": "Не удалось запустить задачу текстур. Проверьте выбранный путь Mod, состояние инструмента, свободное место и права на файлы.",
-      "tool_download_failed": "Не удалось начать загрузку инструмента текстур. Проверьте сеть, прокси и права записи в папку инструментов."
+      "tool_download_failed": "Не удалось начать загрузку инструмента текстур. Проверьте сеть, прокси и права записи в папку инструментов.",
+      "encoder_status_failed": "[UNTRANSLATED] 读取贴图编码器状态失败。请检查工具目录权限后重试。",
+      "no_convert_paths": "[UNTRANSLATED] mod_paths 不能为空",
+      "tasks_read_failed": "[UNTRANSLATED] 读取贴图任务状态失败。请稍后重试。",
+      "benchmark_no_targets": "[UNTRANSLATED] 当前没有已启用的模组，无法采样",
+      "benchmark_query_failed": "[UNTRANSLATED] 查询贴图基准任务失败。",
+      "benchmark_start_failed": "[UNTRANSLATED] 启动贴图基准实测失败。请确认已启用模组且 texconv 可用。",
+      "worker_overrides_failed": "[UNTRANSLATED] 保存分片数设置失败。请检查配置文件写入权限。"
     },
     "update": {
       "action_failed": "Не удалось выполнить действие обновления. Проверьте сеть, свободное место и права на папку установки.",
@@ -4481,7 +4531,7 @@
       "clean_start": "Начинаем очистку {target_label}",
       "completed_elapsed": "{message}, истекло {elapsed}",
       "encode_batch": "Генерация {output_label}: пакет {batch_index}/{batch_total} ({scale_label})",
-      "encode_batch_wait": "Ожидание, пока Тоддс завершит запись пакета {batch_index}/{batch_total} ({scale_label})",
+      "encode_batch_wait": "Ожидание, пока кодировщик завершит запись пакета {batch_index}/{batch_total} ({scale_label})",
       "encode_completed": "Генерация {output_label} завершена{details}",
       "encode_record_batch": "Запись сгенерированных файлов: пакетная {batch_index}/{batch_total} ({scale_label})",
       "encode_start": "Запускаем генерацию {output_label}",
@@ -4502,7 +4552,16 @@
       "tool_download_start": "Начинается загрузка пакета todds",
       "tool_install_start": "Пакет todds получен, идет распаковка...",
       "update_encode_state": "Обновление состояния генерации",
-      "write_result": "Запись результата задачи"
+      "write_result": "Запись результата задачи",
+      "texconv_download_start": "[UNTRANSLATED] 开始下载 texconv 编码器",
+      "texconv_install_start": "[UNTRANSLATED] texconv 编码器获取成功，正在落位...",
+      "benchmark_cancelled": "[UNTRANSLATED] 贴图基准任务已取消",
+      "benchmark_done": "Замер завершён: рекомендуются GPU-шарды {gpu} + CPU-шарды {cpu} (0 = выкл.)",
+      "benchmark_failed": "[UNTRANSLATED] 贴图基准任务失败：{error}",
+      "benchmark_no_samples": "[UNTRANSLATED] 启用模组里没有可用于采样的贴图（缺少 256px 以上的 PNG）。",
+      "benchmark_round": "[UNTRANSLATED] 基准实测 {index}/{total}：{scope} 分片 = {value}",
+      "benchmark_scan": "[UNTRANSLATED] 正在随机抽取模组并扫描贴图样本...",
+      "benchmark_requires_texconv": "Для замера требуется быстрый уровень (texconv). Сначала скачайте его в карточке кодировщиков: {detail}"
     },
     "title": {
       "file_delete": "Удаление файла",
@@ -4895,8 +4954,15 @@
     "texture": {
       "tool_download_done": "Инструмент текстур загружен: {path}",
       "tool_download_failed": "Не удалось загрузить инструмент текстур",
-      "tool_download_started_watch_status": "Загрузка Тодда началась. Следите за строкой состояния.",
-      "tool_ready_no_download": "Тоддс готов; загрузка не требуется"
+      "texconv_download_done": "[UNTRANSLATED] texconv 下载完成: {path}",
+      "texconv_download_failed": "[UNTRANSLATED] texconv 下载失败",
+      "encoder_download_started": "[UNTRANSLATED] 已启动 {name} 下载任务，请留意底部状态栏。",
+      "encoder_ready": "[UNTRANSLATED] {name} 已就绪",
+      "encoder_site_opened": "[UNTRANSLATED] 已打开官方页面，安装完成后返回此处即可识别。",
+      "benchmark_done": "[UNTRANSLATED] 采样基准完成",
+      "benchmark_failed": "[UNTRANSLATED] 采样基准未完成",
+      "benchmark_starting": "[UNTRANSLATED] 正在启动采样基准…",
+      "worker_overrides_saved": "[UNTRANSLATED] 分片设置已保存"
     },
     "texture_opt": {
       "image_opt_not_enabled": "Image Opt не был обнаружен в списке активных модов. Текстуры ZSTD по-прежнему будут генерироваться, но игра может их не прочитать.",
@@ -6242,7 +6308,9 @@
         "workshop_db_path": "Путь к базе данных Workshop",
         "workshop_db_path_desc": "Файл локального кэша для информационной базы данных Workshop.",
         "workshop_db_url": "URL-адрес базы данных Workshop",
-        "workshop_db_url_desc": "Информационная база данных Workshop, используемая для дополнения названий модов, авторов и описаний. Источник: файл кэша сообщества."
+        "workshop_db_url_desc": "Информационная база данных Workshop, используемая для дополнения названий модов, авторов и описаний. Источник: файл кэша сообщества.",
+        "encoders_desc": "[UNTRANSLATED] 贴图转换可选三种档位，其中中等档需要先安装 NVIDIA 提供的工具。",
+        "encoders_title": "Уровни кодировщиков текстур"
       },
       "features": {
         "action_prechecks": "Обязательные проверки перед ключевыми действиями",

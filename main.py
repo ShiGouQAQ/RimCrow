@@ -189,7 +189,7 @@ def main():
 
     def report_desktop_startup_timeout():
         """
-        桌面模式首屏加载超时兜底。
+        桌面模式首屏加载超时的提示处理。
 
         原理：
         - 如果窗口一直没有 shown，大概率是 WebView / GUI 内核本身没起来；
@@ -253,6 +253,20 @@ def main():
         # 干完活直接退出，不要启动 GUI
         sys.exit(0)
 
+    # 数据面单实例互斥（backend/lifecycle.py）：
+    # 位置约束 —— 必须在 --steam-worker 分支之后（worker 是生命周期很短的子进程，不参与互斥，
+    # 否则会把「父实例在跑时的 worker」误判成第二实例），且在 validate_environment
+    # （可能弹原生错误框）与 `from backend.api import API`（后端初始化）之前：
+    # 第二实例要静默退出且不启动 GUI。互斥名绑定 endpoint 路径，句柄随进程存续。
+    from backend.lifecycle import acquire_single_instance, report_second_instance
+
+    instance = acquire_single_instance()
+    if instance.busy:
+        close_startup_splash()  # 冻结打包下启动屏可能已由 bootloader 显示，先关掉
+        log_startup_perf("single_instance_busy", level="warning")
+        report_second_instance(instance)
+        sys.exit(0)
+
     # 捕获启动阶段未处理异常，确保异常弹窗前启动屏已经关闭
     try:
         # 0. 先校验环境，有问题直接弹原生框并退出
@@ -273,6 +287,10 @@ def main():
         
         api = API(runtime_mode=launch_mode)
         log_startup_perf("api_ready")
+        # MCP 内嵌端点：API 就绪即挂载，早于 window_created /
+        # page_loaded，desktop 与 browser 分支共用；挂载失败仅降级为“无 MCP”，不打断启动。
+        from backend.mcp_embed import start_mcp_embed
+        start_mcp_embed(api, launch_mode, on_stage=log_startup_perf)
         
         # 获取代理参数
         # Pywebview 目前对代理的直接支持有限，通常需要通过底层 flag 传递
@@ -312,7 +330,8 @@ def main():
             close_startup_splash()
             launch_url = browser_runtime.get_launch_url()
             logger.info(f"Browser launch URL: {launch_url}")
-            webbrowser.open(launch_url)
+            if "--no-open" not in sys.argv:  # 显式传入 --no-open 时不弹浏览器标签
+                webbrowser.open(launch_url)
             browser_runtime.wait_for_shutdown()
             browser_runtime.stop()
             api.cleanup()

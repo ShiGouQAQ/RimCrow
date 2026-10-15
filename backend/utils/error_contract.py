@@ -27,6 +27,19 @@ ErrorEnvelope = AppError
 _ERROR_DETAIL_KEYS = ("traceback", "exception_type", "exception_module")
 
 
+# ---- 上游通用错误响应的字段约定（api.py log_api_call 的未处理异常降级响应）----
+# ⚠ api.py 侧的字面量是唯一权威，本处只做单向声明——下游（backend/mcp_server.py 等）
+# 一律 import 这里，不要各自复制字符串字面量。字段约定是否仍与 api.py 实际产出一致，
+# 由 tests/test_mcp_server.py 用真实产物锁定：``ApiResponse.error(
+# UNHANDLED_EXCEPTION_MESSAGE, code=UNHANDLED_EXCEPTION_CODE, detail=<异常>)`` 的返回值
+# 直接进入 MCP 错误结构；api.py 改字段名 / 改文案会使该测试先失败，而不是让 MCP 静默失配。
+UNHANDLED_EXCEPTION_CODE = "API.CALL.UNHANDLED_EXCEPTION"
+UNHANDLED_EXCEPTION_MESSAGE = "API 调用发生未处理异常"
+# message 判别片段（≠ 上面的完整文案）：按子串匹配——任何 message
+# 内含「未处理异常」的上游响应都从 traceback 末行提取，不要求整串相等。
+UNHANDLED_EXCEPTION_MARKER = "未处理异常"
+
+
 def _error_type_from_code(code: str = "", fallback: str = "SYSTEM") -> str:
     value = str(code or "").strip()
     if not value:

@@ -154,6 +154,7 @@ from backend.managers.mgr_data_bundle import DataBundleManager
 from backend.managers.mgr_mod_package import ModPackageManager
 from backend.managers.mgr_rules import resolve_mod_rules
 from backend.managers.mgr_texture_opt import TextureOptimizationManager
+from backend.managers.texture_encoders import TextureOptError
 from backend.managers.mgr_recommendation_export import RecommendationExportManager
 from backend.managers.mgr_multiplayer_compat import MultiplayerCompatibilityManager
 from backend.load_order.language_pack_ownership import is_language_pack_mod, resolve_language_pack_ownership_for_mods
@@ -248,6 +249,28 @@ def log_api_call(func):
             else:
                 logger.debug(f"API 调用完成: name={func_name}, args={safe_args}, duration_ms={duration:.2f}", stacklevel=2)
             return result
+        except ValueError as e:
+            # 业务校验错误（DAO / API 前置条件）：异常 message 本身即出错原因，必须原样带给调用方。
+            # 关键约束：不传 code / user_message——coerce_error_envelope 按 detail 里的异常分类
+            # （ValueError → SYSTEM.INVALID_INPUT），默认 code 的 APP. 前缀不触发显式 code 覆写；
+            # 传非 SYSTEM./APP. 前缀的 code（如 except Exception 分支的 API.CALL.UNHANDLED_EXCEPTION）
+            # 会覆盖分类，具体原因就只剩 traceback；detail=e 把 traceback 留在 payload 供 MCP 层排查。
+            duration = (time.time() - start_time) * 1000
+            logger.error(
+                "API 调用失败：%s，耗时 %.2fms",
+                func_name,
+                duration,
+                exc_info=True,
+                extra={
+                    "error_code": "API.VALIDATION_FAILED",
+                    "extra_context": {"api": func_name, "duration_ms": round(duration, 2)},
+                },
+            )
+            return ApiResponse.error(
+                str(e),
+                detail=e,
+                context={"api": func_name, "duration_ms": round(duration, 2)},
+            )
         except Exception as e:
             duration = (time.time() - start_time) * 1000
             logger.error(
@@ -260,6 +283,7 @@ def log_api_call(func):
                     "extra_context": {"api": func_name, "duration_ms": round(duration, 2)},
                 },
             )
+            # 真正的未处理异常（编程错误等）：这里才允许降级为通用错误响应。
             # 这里的异常通常需要返回给前端一个标准格式
             return ApiResponse.error(
                 "API 调用发生未处理异常",
@@ -930,7 +954,7 @@ class API:
             self.active_context = self.profile_mgr.activate_profile(profile_id)
         except Exception as e:
             if not allow_fallback: raise
-            # 兜底：如果报错，强制退回 default
+            # 降级：出错时强制退回 default 值
             logger.error("装配环境上下文失败: profile_id=%s", profile_id, exc_info=True)
             self.active_context = self.profile_mgr.activate_profile('default')
         
@@ -1304,7 +1328,7 @@ class API:
     def _ensure_directory(path_value: str | None) -> str:
         """
         确保目录存在并返回规范化后的目录字符串。
-        若创建失败则返回空串，由上层继续走兜底逻辑。
+        若创建失败则返回空串，由上层继续走各自的备选逻辑。
         """
         value = str(path_value or "").strip()
         if not value: return ""
@@ -2060,7 +2084,7 @@ class API:
         rule_mgr = self.sorter.rule_mgr if (self.sorter and self.sorter.rule_mgr) else None
         current_version = self.active_context.game_version[:3]
         
-        # 新增：提取所有联锁组并做映射
+        # 提取所有联锁组并做映射
         interlocks = list(ModInterlock.select().dicts())
         interlock_map = {i['id']: i['chain'] for i in interlocks}
         _log_startup_perf(
@@ -4148,7 +4172,7 @@ class API:
 
     def _ensure_runtime_links_for_launch(self, profile_id: str, include_workshop: bool) -> bool:
         """
-        启动前兜底检查。
+        启动前的最终校验。
         直接按当前数据库事实收口目标环境目录，避免共享目录时被旧缓存误导。
         """
         normalized_profile_id = str(profile_id or "").strip()
@@ -6359,7 +6383,7 @@ class API:
         """解析助手会话中的日志来源信息。
 
         运行时唯一可信来源应当是 assistant_context.request_payload；
-        如果调用方只给了 diagnosis_context 附件，则从附件 source 中兜底提取。
+        如果调用方只给了 diagnosis_context 附件，则改从附件 source 中提取。
         """
 
         source_type = str(
@@ -7266,7 +7290,7 @@ class API:
                     if wid:
                         missing_dependencies[wid] = target_pid
 
-            # 没有规则管理器时保留旧的外置库兜底；正常运行时外置规则已包含在 effective_rules 中，
+            # 没有规则管理器时退而直接查外置库；正常运行时外置规则已包含在 effective_rules 中，
             # 不再额外按单一工坊包名重复判定，避免和 workshop_rules_as_dependency 开关不一致。
             if rule_mgr:
                 continue
@@ -9001,6 +9025,126 @@ class API:
             return ApiResponse.success(self.texture_mgr.set_file_exclusion(mod_path, rel_path, exclude))
         except Exception as e:
             return ApiResponse.error("保存文件贴图排除规则失败", code="TEXTURE.FILE_EXCLUSION_SAVE_FAILED", detail=e, context={"mod_path": mod_path, "rel_path": rel_path}, user_message=tr("errors.texture.file_exclusion_save_failed", "保存文件贴图排除规则失败。请检查配置文件权限。"))
+
+    # ---- 贴图转换 MCP 接口（启动/查询/取消全流程） -------------------
+
+    @log_api_call
+    def texture_get_encoder_status(self, options: dict|None = None):
+        """贴图转换：贴图编码器可用性与机器自适应方案（纯读）"""
+        try:
+            return ApiResponse.success(self.texture_mgr.get_encoder_status(options))
+        except Exception as e:
+            return ApiResponse.error(
+                "读取贴图编码器状态失败",
+                code="TEXTURE.ENCODER_STATUS_FAILED",
+                detail=e,
+                user_message=tr("errors.texture.encoder_status_failed", "读取贴图编码器状态失败。请检查工具目录权限后重试。"),
+            )
+
+    @log_api_call
+    def texture_run_worker_benchmark(self, options: dict|None = None):
+        """对已启用模组贴图随机采样，实测 GPU/CPU 分片梯度并持久化推荐值（后台任务）"""
+        try:
+            # 启用模组全量必须走 collect_active_targets——resolve_targets 的 "active"
+            # 只在给定 package_ids 里筛启用，空清单恒返回空，会报 TEXTURE.BENCHMARK_NO_TARGETS
+            targets = self.texture_mgr.collect_active_targets(self.active_context)
+            if not targets:
+                return ApiResponse.error(
+                    tr("errors.texture.benchmark_no_targets", "当前没有已启用的模组，无法采样"),
+                    code="TEXTURE.BENCHMARK_NO_TARGETS",
+                )
+            return ApiResponse.success(self.texture_mgr.start_benchmark(targets, options))
+        except Exception as e:
+            return ApiResponse.error(
+                "启动贴图基准实测失败",
+                code="TEXTURE.BENCHMARK_START_FAILED",
+                detail=e,
+                user_message=tr("errors.texture.benchmark_start_failed", "启动贴图基准实测失败。请确认已启用模组且 texconv 可用。"),
+            )
+
+    @log_api_call
+    def texture_get_worker_benchmark(self, task_id: str):
+        """查询采样基准任务进度/结果"""
+        try:
+            return ApiResponse.success(self.texture_mgr.get_benchmark_task(task_id))
+        except Exception as e:
+            return ApiResponse.error(
+                "查询贴图基准任务失败",
+                code="TEXTURE.BENCHMARK_QUERY_FAILED",
+                detail=e,
+                user_message=tr("errors.texture.benchmark_query_failed", "查询贴图基准任务失败。"),
+            )
+
+    @log_api_call
+    def texture_set_worker_overrides(self, gpu_workers: int = 0, cpu_workers: int = 0, options: dict|None = None):
+        """手动设置分片数并持久化（0 = 跟随实测推荐/默认）"""
+        try:
+            return ApiResponse.success(self.texture_mgr.set_worker_overrides(gpu_workers, cpu_workers))
+        except Exception as e:
+            return ApiResponse.error(
+                "保存分片数设置失败",
+                code="TEXTURE.WORKER_OVERRIDES_FAILED",
+                detail=e,
+                user_message=tr("errors.texture.worker_overrides_failed", "保存分片数设置失败。请检查配置文件写入权限。"),
+            )
+
+    @log_api_call
+    def texture_prepare_encoder_download(self, backend: str = "todds", options: dict|None = None):
+        """贴图转换：下载缺失的贴图编码器（todds=zip 解包 / texconv=单文件落位）"""
+        try:
+            res = self.texture_mgr.prepare_encoder_download(self.download_mgr, backend, options)
+            if res.get("already_ready"):
+                return ApiResponse.success(res, message=tr("api.texture.tool_ready", "工具已经就绪"))
+            if res.get("download_kind") == "external":
+                # NVTT 不自动下载，返回官网地址由前端打开
+                return ApiResponse.success(res, message=tr("api.texture.tool_install_required", "该工具需从官网下载安装，安装后返回此处即可识别"))
+            return ApiResponse.success(res, message=tr("api.texture.tool_download_started", "已启动工具下载任务"))
+        except Exception as e:
+            return ApiResponse.error(
+                "启动贴图编码器下载失败",
+                code="TEXTURE.ENCODER_DOWNLOAD_FAILED",
+                detail=e,
+                user_message=tr("errors.texture.tool_download_failed", "启动贴图工具下载失败。请检查网络连接、代理设置和工具目录写入权限。"),
+            )
+
+    @log_api_call
+    def texture_start_convert(self, mod_paths: List[str], options: dict|None = None, dry_run: bool = False):
+        """贴图转换：按模组物理路径启动贴图转换（不经 package_id 解析，零 ModDAO 依赖）"""
+        try:
+            paths = [str(path or "").strip() for path in (mod_paths or []) if str(path or "").strip()]
+            if not paths:
+                return ApiResponse.error(tr("errors.texture.no_convert_paths", "mod_paths 不能为空"))
+            if dry_run:
+                preview = self.texture_mgr.preview_convert_targets(paths, options)
+                return ApiResponse.success(preview, message=tr("api.texture.convert_preview_done", "预演完成（未写盘）"))
+            targets = self.texture_mgr.normalize_mod_paths(paths)
+            if not targets:
+                return ApiResponse.error(tr("errors.texture.no_valid_mod_paths", "未能找到指定模组的有效物理路径"))
+            res = self.texture_mgr.start_task(targets, action="optimize", options=options)
+            return ApiResponse.success(res, message=tr("api.texture.task_queued.optimize", "贴图优化任务已加入队列"))
+        except TextureOptError as e:
+            return ApiResponse.error(str(e), code="TEXTURE.CONVERT_REJECTED", user_message=str(e))
+        except Exception as e:
+            logger.error("MCP 贴图转换任务启动失败", exc_info=True)
+            return ApiResponse.error(
+                "启动贴图转换任务失败",
+                code="TEXTURE.CONVERT_START_FAILED",
+                detail=e,
+                user_message=tr("errors.texture.task_start_failed", "启动贴图任务失败。请检查所选模组路径、工具状态、磁盘空间和文件权限。"),
+            )
+
+    @log_api_call
+    def texture_get_tasks(self):
+        """贴图转换：进行中的贴图转换任务快照"""
+        try:
+            return ApiResponse.success(self.texture_mgr.list_active_tasks())
+        except Exception as e:
+            return ApiResponse.error(
+                "读取贴图任务状态失败",
+                code="TEXTURE.TASKS_READ_FAILED",
+                detail=e,
+                user_message=tr("errors.texture.tasks_read_failed", "读取贴图任务状态失败。请稍后重试。"),
+            )
 
 
     # =========================================================================

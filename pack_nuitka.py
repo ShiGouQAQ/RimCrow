@@ -331,6 +331,12 @@ def create_release_zip(app_name: str, version: str, mode: str = "onefile"):
     archive_root = Path(app_name)
 
     release_items = list(_iter_nuitka_output_files(dist_dir, app_name, mode))
+    # 双产物：rimcrow-mcp.exe 与主 exe 同批发布
+    bridge_exe = dist_dir / "rimcrow-mcp.exe"
+    if bridge_exe.exists():
+        release_items.append((bridge_exe, Path(bridge_exe.name)))
+    else:
+        print("警告: dist/rimcrow-mcp.exe 缺失，发布包将不含生产 stdio 入口（build_bridge 未跑？）")
     if mode == "onefile":
         release_items.extend(_iter_frontend_dist_files(project_root / "frontend" / "dist") or [])
     release_items.extend(_iter_toolmods_files(project_root / "toolmods" / "RimCrowCompanion") or [])
@@ -445,6 +451,11 @@ if __name__ == "__main__":
     os.environ["SETUPTOOLS_USE_DISTUTILS"] = "local"
 
     buildFrontend(start_path="frontend")
+
+    # 双产物：rimcrow-mcp.exe（Rust 桥，生产 stdio 入口）——复用 pack_pyinstaller 的构建流程
+    from pack_pyinstaller import build_bridge
+
+    build_bridge(APP_VERSION)
 
     print(f"=== 开始 Nuitka 打包 {APP_NAME} v{APP_VERSION} ===")
     packed = packApplication(

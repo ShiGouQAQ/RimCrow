@@ -1622,8 +1622,8 @@ class GroupDAO:
         """按前端传回的新顺序重排分组本身。"""
         normalized_ids = [str(group_id or "").strip() for group_id in group_id_list if str(group_id or "").strip()]
         existing_ids = [row.group_id for row in GroupData.select(GroupData.group_id).order_by(GroupData.sort_index, GroupData.group_id)]
-        if not existing_ids:
-            return
+        # 不做提前返回：空表 + 非空提交必须走下方数量校验被拒绝，不允许伪造 id 后静默成功；
+        # 空表 + 空提交自然通过全部校验并以零次循环收尾（结果等同无操作成功）。
         if len(normalized_ids) != len(existing_ids):
             raise ValueError("分组排序失败：提交的分组数量与当前数据不一致。")
         if len(set(normalized_ids)) != len(normalized_ids):

@@ -1,15 +1,17 @@
 from __future__ import annotations
 
 import concurrent.futures
+import datetime
 import errno
 import hashlib
 import json
 import os
 import platform
+import queue
+import random
 import re
 import shutil
 import struct
-import subprocess
 import tempfile
 import threading
 import time
@@ -23,11 +25,26 @@ from PIL import Image
 from backend.i18n.messages import localized_key, localized_params, tr
 from backend.load_order.package_tokens import parse_package_token
 from backend.paths.core import path_key
-from backend.settings import DATA_DIR, TOOLS_DIR, settings
+from backend.settings import DATA_DIR, settings
 from backend.utils.event_bus import EventBus
 from backend.utils.json_io import write_json_atomic
 from backend.utils.logger import logger
 from backend.utils.tools import current_ms, generate_path_hash, normalize_package_id
+from backend.managers.texture_encoders import (
+    MAX_TEXTURE_WORKERS,
+    MIN_TEXTURE_WORKERS,
+    NvttEncoder,
+    TextureOptCancelled,
+    TextureOptError,
+    TexconvEncoder,
+    ToddsEncoder,
+    ToolRunError,
+    create_encoder,
+    resolve_auto_backend,
+    resolve_texture_tools_path,
+    resolve_worker_plan,
+    texconv_info,
+)
 
 TEXTURE_TASK_TYPE = "texture-opt"
 TEXTURE_ANALYSIS_TASK_TYPE = "texture-opt-analyze"
@@ -41,7 +58,14 @@ TEXTURE_RETRY_BATCH_SIZE = 64
 ZSTD_COMPRESS_RETRY_DELAYS_SECONDS = (0.1, 0.3)
 TODDS_WINDOWS_ASSET_PREFIX = "todds_Windows_"
 TODDS_FALLBACK_VERSION = "0.4.1"
+# todds 仓库已于 2026-03 归档只读（作者的继任工具为 imutate，Codeberg）；版本固定 0.4.1。
+# 升级/更换编码器前先评估继任者的成熟度与旗标兼容性，不要盲目跟随上游更新。
 TODDS_FALLBACK_FILENAME = f"todds_Windows_{TODDS_FALLBACK_VERSION}.zip"
+TEXCONV_ASSET_NAME = "texconv.exe"
+TEXCONV_FALLBACK_TAG = "may2026"
+# NVTT 是闭源安装包、官网只提供应用安装器无稳定单文件直链 → 不自动下载，
+# 缺失时把该地址交给前端 open_external_url 打开。
+NVTT_DOWNLOAD_URL = "https://developer.nvidia.com/texture-tools-exporter"
 SOURCE_IMAGE_EXTENSIONS = (".png",)
 SOURCE_REFERENCE_IMAGE_EXTENSIONS = (".png", ".jpg", ".jpeg", ".psd")
 TEXTURE_OUTPUT_DDS_EXT = ".dds"
@@ -59,8 +83,38 @@ SCALE_STEP_RATIONALS = {
 }
 TODDS_PROGRESS_PATTERN = re.compile(r"Progress:\s*(\d+)\s*/\s*(\d+)", re.IGNORECASE)
 
+# dry_run 预演（preview_convert_targets）的逐模组投影：键名**全部沿用 stat 既有键**，
+# 禁止另起同义词（否则同一概念两套词汇，接口约定一旦发布就永久分裂）。
+_PREVIEW_MOD_FIELDS = (
+    "mod_path",
+    "mod_name",
+    "package_id",
+    "source_total_count",
+    "source_total_bytes",
+    "current_output_count",
+    "generate_required_count",
+    "skip_small_count",
+    "excluded_count",
+    "unsupported_source_count",
+    "scan_failed_count",
+)
+
 TEXTURE_EXCLUSIONS_PATH = DATA_DIR / "texture_opt_exclusions.json"
 TEXTURE_RESULTS_DIR = DATA_DIR / "logs" / "texture-opt" / "results"
+TEXTURE_BENCHMARK_PATH = DATA_DIR / "texture_benchmark.json"
+TEXTURE_BENCHMARK_SCHEMA = 1
+# 采样基准：GPU/CPU 分片梯度（clamp 到 MIN..MAX_TEXTURE_WORKERS），按真实启用模组
+# 贴图实测每组吞吐（mpix/s），取最快为推荐值。样本总像素预算控制单轮时长。
+TEXTURE_BENCHMARK_GPU_GRADIENT = (1, 2, 3, 4, 6)
+TEXTURE_BENCHMARK_CPU_GRADIENT = (2, 4, 6, 8)
+TEXTURE_BENCHMARK_SAMPLE_COUNT = 8
+TEXTURE_BENCHMARK_TOTAL_MPIX_BUDGET = 24.0
+TEXTURE_BENCHMARK_MAX_SAMPLE_MPIX = 8.0
+TEXTURE_BENCHMARK_MIN_SAMPLE_EDGE = 256
+TEXTURE_BENCHMARK_GROUP_TIMEOUT_SECONDS = 120
+# 分层随机：每批随机抽 16 个启用模组扫描，entries 池 ≥64 张即够；最多 3 批（48 模组下限）
+TEXTURE_BENCHMARK_SCAN_BATCH = 16
+TEXTURE_BENCHMARK_SCAN_TARGET_ENTRIES = 64
 
 
 def _safe_json_load(path: Path, fallback: Any) -> Any:
@@ -69,13 +123,86 @@ def _safe_json_load(path: Path, fallback: Any) -> Any:
     except (OSError, json.JSONDecodeError):
         return fallback
 
-class TextureOptError(RuntimeError):
-    pass
+
+class _ZstdFatalError(TextureOptError):
+    """ZSTD 管线的致命配置错误（如运行环境缺 zstandard）：必须中止整批任务，
+    而不是把每个条目记成失败后假装任务「完成」。消费线程捕获后暂存，由
+    ``collect`` 在主线程重抛，恢复与串行路径一致的任务级失败语义。"""
 
 
-class TextureOptCancelled(TextureOptError):
-    pass
+class _ZstdFinalizer:
+    """ZSTD 模式的后台压缩管线：编码器每完成一个单元就提交，这里把该单元的临时 DDS
+    压缩成 .dds.zstd 并删除，与剩余单元的编码重叠（压缩吃 CPU/磁盘、编码主要时间在
+    外部编码进程里，两者互不阻塞）。
 
+    - ``submit`` 由编码器工作线程调用（Queue 线程安全）。单元粒度 = texconv 的
+      目录×路由×mip 组、NVTT 的分块；todds 无单元概念 → 编码进程成功后整批提交
+      一次，压缩因此仍发生在编码结束之后（与旧串行时序等价）。
+    - ``collect`` 在编码进程全部退出后调用：排空队列并等待在途压缩完成，返回
+      (成功条目, [(条目, 异常)])；致命配置错误（_ZstdFatalError）在此重抛。
+    - ``abort`` 供编码失败/取消路径使用：丢弃未消费的单元（这些条目的临时 DDS 由
+      调用方的 cleanup+restore 兜底），在途的一个分块等待完成后退出。
+    """
+
+    def __init__(
+        self,
+        finalize_chunk: Callable[[list[dict[str, Any]]], tuple[list[dict[str, Any]], list[tuple[dict[str, Any], Exception]]]],
+    ):
+        # 队列有意不设 maxsize：它只持条目 dict（每条几百字节），不是磁盘写缓冲——
+        # 临时 DDS 的磁盘峰值由「编码产出 vs 压缩消费」的速率差决定，与队列长度无关；
+        # 设 maxsize 反而会让编码线程阻塞在 submit 上，抵消重叠收益。
+        self._finalize_chunk = finalize_chunk
+        self._queue: queue.Queue = queue.Queue()
+        self._successful: list[dict[str, Any]] = []
+        self._failed: list[tuple[dict[str, Any], Exception]] = []
+        self._fatal_error: Exception | None = None
+        self._lock = threading.Lock()
+        self._thread = threading.Thread(target=self._consume, daemon=True, name="TextureZstdFinalizer")
+        self._thread.start()
+
+    def submit(self, entries: list[dict[str, Any]]) -> None:
+        if entries:
+            self._queue.put(list(entries))
+
+    def _consume(self) -> None:
+        while True:
+            chunk = self._queue.get()
+            if chunk is None:
+                return
+            try:
+                successful, failed = self._finalize_chunk(chunk)
+            except _ZstdFatalError as exc:
+                # 致命配置错误：停止消费并暂存，collect 在主线程重抛
+                with self._lock:
+                    self._fatal_error = exc
+                return
+            except Exception as exc:  # noqa: BLE001 - 压缩线程不许静默死亡：整块按失败计
+                with self._lock:
+                    self._failed.extend((entry, TextureOptError(f"压缩 ZSTD 失败: {exc}")) for entry in chunk)
+                continue
+            with self._lock:
+                self._successful.extend(successful)
+                self._failed.extend(failed)
+
+    def collect(self) -> tuple[list[dict[str, Any]], list[tuple[dict[str, Any], Exception]]]:
+        self._queue.put(None)
+        self._thread.join()
+        if self._fatal_error is not None:
+            raise self._fatal_error
+        with self._lock:
+            return list(self._successful), list(self._failed)
+
+    def abort(self) -> None:
+        while True:
+            try:
+                self._queue.get_nowait()
+            except queue.Empty:
+                break
+        self._queue.put(None)
+        # 不带超时地等消费线程退出：abort 丢弃队列后，在途的最多一个分块压完即收哨兵，
+        # 没有任何会让 join 永久阻塞的依赖。带超时的变体反而会引入竞态——超时返回后
+        # 主线程的 cleanup/restore 会与仍在压缩的消费线程并发读写同一批文件。
+        self._thread.join()
 
 class TextureTargetResolver:
     """将前端选择的模组范围解析为贴图任务可处理的真实模组实例。"""
@@ -287,14 +414,6 @@ class TextureTargetResolver:
         return targets
 
 
-def resolve_texture_tools_path(options: dict[str, Any]) -> Path:
-    raw_texture_tools_path = str(options.get("texture_tools_path") or "").strip()
-    if raw_texture_tools_path:
-        candidate = Path(raw_texture_tools_path)
-        return candidate.parent if candidate.suffix.lower() == ".exe" else candidate
-    return TOOLS_DIR / "texture_tools"
-
-
 @dataclass
 class TextureTask:
     id: str
@@ -359,229 +478,12 @@ class TextureTask:
         }
 
 
-class _ToolProcessRunner:
-    @staticmethod
-    def run_command(
-        command: list[str],
-        cancel_event: threading.Event,
-        timeout_seconds: float | None = None,
-        *,
-        tool_name: str = "todds",
-        output_callback: Callable[[str], None] | None = None,
-    ) -> None:
-        creationflags = 0
-        startupinfo = None
-        if platform.system() == "Windows":
-            creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
-            startupinfo = subprocess.STARTUPINFO()
-            startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
-
-        log_path: Path | None = None
-        process = None
-        last_activity_at = time.monotonic()
-        was_cancelled = False
-        timeout_detail = ""
-        try:
-            with tempfile.NamedTemporaryFile("w", encoding="utf-8", newline="\n", delete=False, suffix=".log") as log_file:
-                log_path = Path(log_file.name)
-                process = subprocess.Popen(
-                    command,
-                    stdout=subprocess.PIPE,
-                    stderr=subprocess.STDOUT,
-                    text=True,
-                    encoding="utf-8",
-                    errors="replace",
-                    bufsize=1,
-                    creationflags=creationflags,
-                    startupinfo=startupinfo,
-                )
-                reader_error: Exception | None = None
-
-                def consume_output() -> None:
-                    nonlocal last_activity_at, reader_error
-                    if not process or not process.stdout: return
-                    try:
-                        for line in process.stdout:
-                            last_activity_at = time.monotonic()
-                            log_file.write(line)
-                            if output_callback:
-                                output_callback(line.rstrip("\r\n"))
-                    except Exception as exc:
-                        reader_error = exc
-
-                reader = threading.Thread(target=consume_output, daemon=True, name=f"{tool_name}-output")
-                reader.start()
-                while True:
-                    if cancel_event.is_set():
-                        _ToolProcessRunner.terminate_process(process)
-                        was_cancelled = True
-                        break
-                    if process.poll() is not None:
-                        break
-                    if timeout_seconds and (time.monotonic() - last_activity_at) > float(timeout_seconds):
-                        _ToolProcessRunner.terminate_process(process)
-                        timeout_detail = "__timeout__"
-                        break
-                    if reader_error is not None:
-                        _ToolProcessRunner.terminate_process(process)
-                        raise TextureOptError(f"{tool_name} 输出读取失败: {reader_error}")
-                    time.sleep(0.1)
-                reader.join(timeout=2)
-        finally:
-            if process and process.poll() is None:
-                _ToolProcessRunner.terminate_process(process)
-
-        if not process:
-            raise TextureOptError(f"{tool_name} 进程未能启动")
-
-        detail = _ToolProcessRunner.read_process_log(log_path)
-        if was_cancelled:
-            _ToolProcessRunner.cleanup_log_file(log_path)
-            raise TextureOptCancelled("贴图优化任务已取消")
-        if timeout_detail:
-            preserved_log = _ToolProcessRunner.preserve_process_log(log_path, tool_name)
-            raise TextureOptError(
-                f"{tool_name} 执行超时（连续 {int(timeout_seconds or 0)} 秒无输出）: {detail or '无输出'}"
-                + (f" [日志: {preserved_log}]" if preserved_log else "")
-            )
-        if process.returncode != 0:
-            preserved_log = _ToolProcessRunner.preserve_process_log(log_path, tool_name)
-            raise TextureOptError(
-                f"{tool_name} 执行失败: {detail or '未知错误'}"
-                + (f" [日志: {preserved_log}]" if preserved_log else "")
-            )
-        _ToolProcessRunner.cleanup_log_file(log_path)
-
-    @staticmethod
-    def terminate_process(process: subprocess.Popen) -> None:
-        try:
-            process.terminate()
-            process.wait(timeout=2)
-        except subprocess.TimeoutExpired:
-            process.kill()
-        except OSError:
-            pass
-
-    @staticmethod
-    def read_process_log(log_path: Path | None, limit: int = 2000) -> str:
-        if not log_path or not log_path.exists(): return ""
-        try:
-            with log_path.open("rb") as handle:
-                handle.seek(0, os.SEEK_END)
-                size = handle.tell()
-                handle.seek(max(0, size - max(1, int(limit))), os.SEEK_SET)
-                data = handle.read()
-        except OSError: return ""
-        return data.decode("utf-8", errors="replace").strip() if data else ""
-
-    @staticmethod
-    def cleanup_log_file(log_path: Path | None) -> None:
-        if not log_path: return
-        try: log_path.unlink()
-        except OSError: pass
-
-    @staticmethod
-    def preserve_process_log(log_path: Path | None, tool_name: str) -> str:
-        if not log_path or not log_path.exists(): return ""
-        preserved_path = log_path.with_name(f"{tool_name}_{log_path.stem}.log")
-        try:
-            if preserved_path.exists():
-                preserved_path.unlink()
-            log_path.replace(preserved_path)
-            return str(preserved_path)
-        except OSError:
-            return str(log_path)
-
-
-class ToddsEncoder:
-    tool_name = "todds"
-    OPAQUE_FORMAT = "BC1"
-    ALPHA_FORMAT = "BC7"
-
-    def __init__(self, options: dict[str, Any]):
-        self.options = options
-
-    def resolve_executable(self) -> Path:
-        if platform.system() != "Windows":
-            raise TextureOptError("todds 后端当前仅支持 Windows 自动集成。")
-        texture_tools_path = resolve_texture_tools_path(self.options)
-        candidates = [
-            str(self.options.get("todds_path") or "").strip(),
-            str(texture_tools_path / "todds.exe"),
-            str(TOOLS_DIR / "texture_tools" / "todds.exe"),
-            shutil.which("todds.exe") or "",
-        ]
-        for candidate in candidates:
-            if candidate and Path(candidate).exists(): return Path(candidate)
-        raise TextureOptError("未找到 todds.exe。请在贴图优化中心下载 todds。")
-
-    def encode_batch(
-        self,
-        cancel_event: threading.Event,
-        *,
-        source_paths: list[str],
-        overwrite_existing: bool,
-        scale_percent: int | None,
-        max_size: int | None = None,
-        output_callback: Callable[[str], None] | None = None,
-    ) -> None:
-        normalized_sources = [str(Path(path)) for path in source_paths if path]
-        if not normalized_sources: return
-        resolved_max_size = int(self.options.get("max_size", 0) or 0) if max_size is None else int(max_size or 0)
-
-        command = [
-            str(self.resolve_executable()),
-            "-f",
-            self.OPAQUE_FORMAT,
-            "-af",
-            self.ALPHA_FORMAT,
-            "-o" if overwrite_existing else "-on",
-            "-vf",
-            "-r",
-            "Textures",
-            "-t",
-            "-p",
-        ]
-        if not bool(self.options.get("generate_mipmaps", True)):
-            command.append("-nm")
-        if scale_percent is None:
-            command.append("-fs")
-        else:
-            command.extend(["-sc", str(int(scale_percent))])
-        if resolved_max_size > 0:
-            command.extend(["-ms", str(resolved_max_size)])
-
-        timeout_seconds = max(300, int(self.options.get("encode_batch_timeout_seconds", 600) or 600))
-        file_list = None
-        try:
-            with tempfile.NamedTemporaryFile("w", encoding="utf-8", newline="\n", delete=False, suffix=".txt") as handle:
-                file_list = Path(handle.name)
-                for source_path in normalized_sources:
-                    handle.write(f"{source_path}\n")
-            command.append(str(file_list))
-            run_kwargs = {
-                "timeout_seconds": timeout_seconds,
-                "tool_name": "todds",
-            }
-            if output_callback is not None:
-                run_kwargs["output_callback"] = output_callback
-            _ToolProcessRunner.run_command(
-                command,
-                cancel_event,
-                **run_kwargs,
-            )
-        finally:
-            if file_list and file_list.exists():
-                try:
-                    file_list.unlink()
-                except OSError:
-                    pass
-
 class TextureOptimizationManager:
     def __init__(self):
         self._tasks: dict[str, TextureTask] = {}
         self._analysis_tasks: dict[str, threading.Event] = {}
         self._analysis_started_at: dict[str, int] = {}
+        self._benchmark_tasks: dict[str, dict[str, Any]] = {}
         self._lock = threading.Lock()
         self._base_scan_cache: dict[str, dict[str, Any]] = {}
         self._cache_lock = threading.Lock()
@@ -903,9 +805,8 @@ class TextureOptimizationManager:
             return None
         return self._bind_base_index_metadata(cached, target)
 
-    def _remember_todds_log_path(self, exc: Exception) -> str:
-        match = re.search(r"\[日志:\s*(.*?)\]$", str(exc or ""))
-        self._last_todds_log_path = match.group(1).strip() if match else ""
+    def _remember_encoder_log_path(self, exc: Exception) -> str:
+        self._last_todds_log_path = str(getattr(exc, "log_path", "") or "")
         return self._last_todds_log_path
 
     def get_active_analysis_task_ids(self) -> list[str]:
@@ -943,6 +844,11 @@ class TextureOptimizationManager:
 
     def resolve_targets(self, package_ids: list[str], target_scope: str = "active", active_context: Any | None = None) -> list[dict[str, Any]]:
         return TextureTargetResolver(active_context).resolve(package_ids, target_scope)
+
+    def collect_active_targets(self, active_context: Any | None = None) -> list[dict[str, Any]]:
+        """当前档案**全部启用**模组（resolve_targets 的 "active" 是在给定清单里筛启用，
+        空 package_ids 会直接返回空——全量启用场景必须走这里）。"""
+        return TextureTargetResolver(active_context).collect_installed_targets(include_disabled=False)
 
     def resolve_clean_targets(
         self,
@@ -1051,12 +957,19 @@ class TextureOptimizationManager:
         raise TextureOptError("未找到对应的贴图优化任务")
 
     def get_backend_status(self, options: dict[str, Any] | None = None) -> dict[str, Any]:
+        """当前配置所选档位（auto 含回退）的就绪状态——GUI 生成/清理按钮的门槛来源。
+
+        必须按 ``encoder_backend`` 解析真实将运行的编码器，而不是固定检测 todds：
+        只装快速档的用户选 texconv 时应当可用，反之选了缺失的档位也要拦下并指明缺谁。
+        """
         merged_options = self._build_options(options)
+        encoder = create_encoder(merged_options)
         try:
-            executable = ToddsEncoder(merged_options).resolve_executable()
-            message = tr("api.texture.todds_found", "已找到 todds 可执行文件")
+            executable = encoder.resolve_executable()
+            message = tr("api.texture.encoder_found", "已找到 {name} 可执行文件", {"name": encoder.tool_name})
             return {
                 "available": True,
+                "backend": encoder.tool_name,
                 "resolved_path": str(executable),
                 "message": str(message),
                 "message_key": localized_key(message),
@@ -1064,20 +977,476 @@ class TextureOptimizationManager:
             }
         except TextureOptError as exc:
             logger.warning("贴图工具不可用: %s", exc)
-            message = tr("api.texture.tool_unavailable", "贴图工具暂不可用。请检查工具配置、下载状态或文件权限。")
+            message = tr(
+                "api.texture.tool_unavailable",
+                "贴图工具暂不可用。请检查工具配置、下载状态或文件权限。",
+            )
             return {
                 "available": False,
+                "backend": encoder.tool_name,
                 "resolved_path": "",
                 "message": str(message),
                 "message_key": localized_key(message),
                 "message_params": localized_params(message),
             }
 
+    # ---- 分片数基准（用户手动触发）与手动覆盖持久化 -------------------------
+
+    @staticmethod
+    def _load_benchmark_state() -> dict[str, Any]:
+        state = _safe_json_load(TEXTURE_BENCHMARK_PATH, {"schema": TEXTURE_BENCHMARK_SCHEMA, "benchmark": None, "overrides": {"gpu_workers": 0, "cpu_workers": 0}})
+        if not isinstance(state, dict):
+            return {"schema": TEXTURE_BENCHMARK_SCHEMA, "benchmark": None, "overrides": {"gpu_workers": 0, "cpu_workers": 0}}
+        state.setdefault("schema", TEXTURE_BENCHMARK_SCHEMA)
+        state.setdefault("benchmark", None)
+        overrides = state.get("overrides")
+        state["overrides"] = overrides if isinstance(overrides, dict) else {}
+        return state
+
+    @staticmethod
+    def _save_benchmark_state(state: dict[str, Any]) -> None:
+        TEXTURE_BENCHMARK_PATH.parent.mkdir(parents=True, exist_ok=True)
+        TEXTURE_BENCHMARK_PATH.write_text(
+            json.dumps(state, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+
+    @classmethod
+    def _load_worker_overrides(cls) -> dict[str, int]:
+        overrides = cls._load_benchmark_state().get("overrides") or {}
+        normalized: dict[str, int] = {}
+        for key in ("gpu_workers", "cpu_workers"):
+            try:
+                value = int(overrides.get(key) or 0)
+            except (TypeError, ValueError):
+                value = 0
+            if MIN_TEXTURE_WORKERS <= value <= MAX_TEXTURE_WORKERS:
+                normalized[key] = value
+        return normalized
+
+    def set_worker_overrides(self, gpu_workers: int, cpu_workers: int) -> dict[str, Any]:
+        """手动覆盖分片数并持久化；0 = 跟随实测推荐/默认。返回刷新后的编码器状态。"""
+        normalized: dict[str, int] = {}
+        for key, value in (("gpu_workers", gpu_workers), ("cpu_workers", cpu_workers)):
+            try:
+                value = int(value)
+            except (TypeError, ValueError):
+                value = 0
+            normalized[key] = value if MIN_TEXTURE_WORKERS <= value <= MAX_TEXTURE_WORKERS else 0
+        state = self._load_benchmark_state()
+        state["overrides"] = normalized
+        self._save_benchmark_state(state)
+        return self.get_encoder_status()
+
+    def start_benchmark(self, mod_targets: list[dict[str, Any]] | list[str], options: dict[str, Any] | None = None) -> dict[str, Any]:
+        """对已启用模组贴图随机采样，按 GPU/CPU 分片梯度实测吞吐（后台任务）。"""
+        normalized_targets = self._normalize_mod_targets(mod_targets)
+        if not normalized_targets:
+            raise TextureOptError("没有可用于基准采样的 Mod 路径")
+        # 基准负载固定由 texconv 承担（分片梯度只对它的 GPU/CPU 池有意义）：
+        # 缺失时在这里给出因果错误，而不是放进后台跑出「全组失败 → 推荐 0/0」的假成功。
+        merged_options = self._build_options(options)
+        try:
+            TexconvEncoder(merged_options).resolve_executable()
+        except TextureOptError as exc:
+            raise TextureOptError(
+                tr(
+                    "tasks.texture.benchmark_requires_texconv",
+                    "采样基准依赖快速档 texconv，请先在「转换档位工具」卡下载：{detail}",
+                    {"detail": str(exc)},
+                )
+            ) from exc
+        task_id = uuid.uuid4().hex
+        cancel_event = threading.Event()
+        with self._lock:
+            self._analysis_tasks[task_id] = cancel_event
+            self._analysis_started_at[task_id] = current_ms()
+        worker = threading.Thread(
+            target=self._run_benchmark,
+            args=(task_id, normalized_targets, merged_options, cancel_event),
+            daemon=True,
+            name=f"TextureBenchmark-{task_id[:8]}",
+        )
+        worker.start()
+        return {"task_id": task_id}
+
+    def get_benchmark_task(self, task_id: str) -> dict[str, Any]:
+        with self._lock:
+            payload = self._benchmark_tasks.get(str(task_id or "").strip())
+        if not payload:
+            raise TextureOptError(f"未找到贴图基准任务: {task_id}")
+        return dict(payload)
+
+    @staticmethod
+    def _pick_benchmark_best(results: list[dict[str, Any]]) -> dict[str, Any] | None:
+        usable = [item for item in results if item.get("seconds") and item.get("mpix_per_sec")]
+        if not usable:
+            return None
+        return max(usable, key=lambda item: (float(item["mpix_per_sec"]), -int(item.get("workers") or 0)))
+
+    @classmethod
+    def _sample_benchmark_entries(cls, entries: list[dict[str, Any]], *, route: str = "any") -> list[dict[str, Any]]:
+        """从扫描产物随机采样基准负载：按总像素预算取样本，保持真实尺寸分布。
+
+        ``route`` 过滤编码路由：``"alpha"`` 只取透明通道样本——GPU 梯度组必须走
+        alpha 路由（encode_batch 里 opaque 路由无条件 -nogpu，混入会让 GPU 分片
+        梯度测不到差异）；``"opaque"`` 只取不透明样本（CPU 梯度组的 BC1 负载，
+        正是生产中 CPU 池承担的路由）；``"any"`` 不过滤，作为 opaque 池不足时的
+        兜底负载（GPU 可用时透明样本会被分去 GPU 池，CPU 池实际构成仍与生产一致）。
+        """
+        import random as _random
+
+        pool: list[dict[str, Any]] = []
+        for entry in entries:
+            width = int(entry.get("width") or 0)
+            height = int(entry.get("height") or 0)
+            if width < TEXTURE_BENCHMARK_MIN_SAMPLE_EDGE or height < TEXTURE_BENCHMARK_MIN_SAMPLE_EDGE:
+                continue
+            mpix = (width * height) / 1_000_000.0
+            if mpix > TEXTURE_BENCHMARK_MAX_SAMPLE_MPIX:
+                continue
+            has_alpha = bool(entry.get("has_alpha", True))
+            if route == "alpha" and not has_alpha:
+                continue
+            if route == "opaque" and has_alpha:
+                continue
+            if not Path(str(entry.get("source_path") or "")).exists():
+                continue
+            pool.append((mpix, entry))
+        if not pool:
+            return []
+        _random.shuffle(pool)
+        sampled: list[dict[str, Any]] = []
+        used_mpix = 0.0
+        for mpix, entry in pool:
+            if len(sampled) >= TEXTURE_BENCHMARK_SAMPLE_COUNT or used_mpix + mpix > TEXTURE_BENCHMARK_TOTAL_MPIX_BUDGET:
+                continue
+            sampled.append(entry)
+            used_mpix += mpix
+        return sampled
+
+    def _run_benchmark_group(
+        self,
+        *,
+        samples: list[dict[str, Any]],
+        work_dir: Path,
+        workers_key: str,
+        workers_value: int,
+        options: dict[str, Any],
+        cancel_event: threading.Event,
+    ) -> dict[str, Any]:
+        """跑一个分片数梯度组：样本按源目录形态铺进临时分片目录，编码到临时目录（源只读）。"""
+        shard_entries: list[dict[str, Any]] = []
+        for index, sample in enumerate(samples):
+            shard_dir = work_dir / f"shard_{index:03d}"
+            shard_dir.mkdir(parents=True, exist_ok=True)
+            source = Path(str(sample.get("source_path")))
+            copied = shard_dir / source.name
+            if not copied.exists():
+                shutil.copyfile(source, copied)
+            shard_entries.append(
+                {
+                    "source_path": str(copied),
+                    "output_path": str(copied.with_suffix(".dds")),
+                    "has_alpha": bool(sample.get("has_alpha", True)),
+                    "width": int(sample.get("width") or 0),
+                    "height": int(sample.get("height") or 0),
+                }
+            )
+        group_options = dict(options)
+        group_options["gpu_workers"] = workers_value if workers_key == "gpu_workers" else 0
+        group_options["cpu_workers"] = workers_value if workers_key == "cpu_workers" else 2
+        # 组超时是「连续无输出」语义，texconv 每写一个文件都会重置计时器；梯度组的
+        # 样本 ≤8 张、每张独立进程，120 秒无输出足以判定该组已挂死（编码器的 300s
+        # 生产下限经 encode_batch_timeout_floor 显式放宽）
+        group_options["encode_batch_timeout_seconds"] = TEXTURE_BENCHMARK_GROUP_TIMEOUT_SECONDS
+        group_options["encode_batch_timeout_floor"] = 1
+        encoder = TexconvEncoder(group_options)
+        started = time.monotonic()
+        encoder.encode_batch(
+            cancel_event,
+            entries=shard_entries,
+            overwrite_existing=True,
+            scale_percent=None,
+            output_callback=None,
+        )
+        seconds = max(0.001, time.monotonic() - started)
+        total_mpix = sum((int(item["width"]) * int(item["height"])) / 1_000_000.0 for item in shard_entries)
+        # 产出物留在分片目录会影响下一轮 pending 判断（增量跳过）→ 每组结束清空
+        for dds_file in work_dir.rglob("*.dds"):
+            dds_file.unlink(missing_ok=True)
+        return {
+            "scope": workers_key,
+            "workers": workers_value,
+            "seconds": round(seconds, 3),
+            "mpix": round(total_mpix, 2),
+            "mpix_per_sec": round(total_mpix / seconds, 2),
+        }
+
+    def _run_benchmark(self, task_id: str, mod_targets: list[dict[str, Any]], options: dict[str, Any], cancel_event: threading.Event) -> None:
+        """采样基准主流程：扫描启用模组 → 随机采样 → GPU/CPU 梯度实测 → 择优持久化。"""
+        total_rounds = len(TEXTURE_BENCHMARK_GPU_GRADIENT) + len(TEXTURE_BENCHMARK_CPU_GRADIENT)
+        round_index = 0
+
+        def emit(status: str, progress: int, message: str, **extra: Any) -> None:
+            with self._lock:
+                self._benchmark_tasks[task_id] = {
+                    "status": status,
+                    "progress": int(progress),
+                    "message": message,
+                    "round": round_index,
+                    "total_rounds": total_rounds,
+                    "updated_at": current_ms(),
+                }
+            self._emit_analysis_progress(
+                task_id,
+                status=status,
+                progress=progress,
+                message=message,
+                processed_mods=round_index,
+                total_mods=total_rounds,
+                summary=extra.pop("summary", None) or self._create_empty_stat(include_mod_count=True, mod_count=0),
+                **extra,
+            )
+
+        work_dir = Path(tempfile.mkdtemp(prefix="rimcrow-texbench-"))
+        try:
+            # 分层随机采样：随机抽模组、只扫抽中的（16 个/批，最多 3 批），池够即开跑。
+            # 基准只需要 ~8 张真实贴图，为它们全量扫描数百个启用模组是纯前置浪费。
+            emit("running", 3, tr("tasks.texture.benchmark_scan", "正在随机抽取模组并扫描贴图样本..."))
+            ordered_targets = list(mod_targets)
+            random.shuffle(ordered_targets)
+            entries: list[dict[str, Any]] = []
+            scanned_count = 0
+            gpu_samples: list[dict[str, Any]] = []
+            cpu_samples: list[dict[str, Any]] = []
+            for _batch_round in range(3):
+                batch = ordered_targets[scanned_count : scanned_count + TEXTURE_BENCHMARK_SCAN_BATCH]
+                if not batch:
+                    break
+                scanned_count += len(batch)
+                if cancel_event.is_set():
+                    raise TextureOptCancelled("贴图基准任务已取消")
+                plan = self._build_texture_plan(
+                    batch,
+                    options,
+                    cancel_event,
+                    analysis_task_id=task_id,
+                    progress_kind="analysis",
+                )
+                entries.extend(entry for result in plan.get("results", []) for entry in (result.get("entries") or []))
+                gpu_samples = self._sample_benchmark_entries(entries, route="alpha")
+                # CPU 组优先不透明样本（BC1，生产中 CPU 池承担的路由）；opaque 池不足时
+                # 退回全路由采样，仍无样本则复用 GPU 样本（CPU BC7，也是真实 CPU 负载）
+                cpu_samples = (
+                    self._sample_benchmark_entries(entries, route="opaque")
+                    or self._sample_benchmark_entries(entries, route="any")
+                    or gpu_samples
+                )
+                if gpu_samples and cpu_samples and len(entries) >= TEXTURE_BENCHMARK_SCAN_TARGET_ENTRIES:
+                    break
+            if not gpu_samples and not cpu_samples:
+                raise TextureOptError(tr("tasks.texture.benchmark_no_samples", "启用模组里没有可用于采样的贴图（缺少 256px 以上的 PNG）。"))
+            if cancel_event.is_set():
+                raise TextureOptCancelled("贴图基准任务已取消")
+
+            texconv_version = ""
+            gpu_probe: bool | None = None
+            try:
+                texconv_exe = TexconvEncoder(options).resolve_executable()
+                info = texconv_info(texconv_exe)
+                gpu_probe = info.get("gpu_directcompute")
+                texconv_version = str(info.get("version") or "")
+            except TextureOptError:
+                pass
+            # GPU 组条件：DirectCompute 可用 **且** 有透明样本（opaque 样本测不出 GPU 分片差异）
+            gpu_gradient = (
+                [g for g in TEXTURE_BENCHMARK_GPU_GRADIENT if g <= MAX_TEXTURE_WORKERS]
+                if gpu_probe and gpu_samples
+                else []
+            )
+            cpu_gradient = [c for c in TEXTURE_BENCHMARK_CPU_GRADIENT if c <= MAX_TEXTURE_WORKERS]
+            groups = [("gpu_workers", value) for value in gpu_gradient] + [("cpu_workers", value) for value in cpu_gradient]
+            total_rounds = len(groups)
+
+            results: list[dict[str, Any]] = []
+            for scope, value in groups:
+                if cancel_event.is_set():
+                    raise TextureOptCancelled("贴图基准任务已取消")
+                round_index += 1
+                emit(
+                    "running",
+                    min(99, int(round_index / max(1, total_rounds) * 100)),
+                    tr(
+                        "tasks.texture.benchmark_round",
+                        "基准实测 {index}/{total}：{scope} 分片 = {value}",
+                        {"index": round_index, "total": total_rounds, "scope": "GPU" if scope == "gpu_workers" else "CPU", "value": value},
+                    ),
+                )
+                try:
+                    results.append(
+                        self._run_benchmark_group(
+                            samples=gpu_samples if scope == "gpu_workers" else cpu_samples,
+                            work_dir=work_dir,
+                            workers_key=scope,
+                            workers_value=value,
+                            options=options,
+                            cancel_event=cancel_event,
+                        )
+                    )
+                except TextureOptCancelled:
+                    raise
+                except Exception as exc:  # noqa: BLE001 - 单组失败不毁掉整轮基准
+                    logger.warning("贴图基准分组失败：scope=%s workers=%s error=%s", scope, value, exc)
+                    results.append({"scope": scope, "workers": value, "seconds": 0, "mpix_per_sec": 0, "error": str(exc)})
+
+            gpu_best = self._pick_benchmark_best([item for item in results if item.get("scope") == "gpu_workers"])
+            cpu_best = self._pick_benchmark_best([item for item in results if item.get("scope") == "cpu_workers"])
+            recommended = {
+                "gpu_workers": int(gpu_best["workers"]) if gpu_best else 0,
+                "cpu_workers": int(cpu_best["workers"]) if cpu_best else 0,
+            }
+            benchmark_payload = {
+                "sampled_at": datetime.datetime.now().isoformat(timespec="seconds"),
+                "sample_count": len(gpu_samples or cpu_samples),
+                "encoder": "texconv",
+                "texconv_version": texconv_version,
+                "gpu_probe": gpu_probe,
+                "results": results,
+                "recommended": recommended,
+            }
+            state = self._load_benchmark_state()
+            state["benchmark"] = benchmark_payload
+            self._save_benchmark_state(state)
+            round_index = total_rounds
+            emit(
+                "completed",
+                100,
+                tr(
+                    "tasks.texture.benchmark_done",
+                    "基准完成：推荐 GPU 分片 {gpu} + CPU 分片 {cpu}（0 = 禁用）",
+                    {"gpu": int(recommended["gpu_workers"] or 0), "cpu": int(recommended["cpu_workers"] or 0)},
+                ),
+                summary=self._create_empty_stat(include_mod_count=True, mod_count=0),
+            )
+        except TextureOptCancelled:
+            logger.info("贴图基准任务已取消")
+            emit("cancelled", 0, tr("tasks.texture.benchmark_cancelled", "贴图基准任务已取消"))
+        except Exception as exc:
+            logger.error("贴图基准任务失败: %s", exc, exc_info=True)
+            emit("failed", 0, tr("tasks.texture.benchmark_failed", "贴图基准任务失败：{error}", {"error": str(exc)[:200]}))
+        finally:
+            shutil.rmtree(work_dir, ignore_errors=True)
+            self.finish_analysis_task(task_id)
+
+    def get_encoder_status(self, options: dict[str, Any] | None = None) -> dict[str, Any]:
+        """编码器可用性 + 机器容量 + auto 推荐方案（纯读，不写盘、不下载）。"""
+        merged_options = self._build_options(options)
+        encoders: dict[str, dict[str, Any]] = {}
+        gpu_probe: bool | None = None
+        texconv_version = ""
+        for name, encoder_cls in (
+            ("todds", ToddsEncoder),
+            ("texconv", TexconvEncoder),
+            ("nvtt", NvttEncoder),
+        ):
+            try:
+                executable = encoder_cls(merged_options).resolve_executable()
+                encoders[name] = {"available": True, "resolved_path": str(executable)}
+            except TextureOptError as exc:
+                encoders[name] = {"available": False, "resolved_path": "", "note": str(exc)}
+        if encoders["texconv"]["available"]:
+            info = texconv_info(Path(encoders["texconv"]["resolved_path"]))
+            gpu_probe = info.get("gpu_directcompute")
+            texconv_version = str(info.get("version") or "")
+        # texconv 不可用时按「无 GPU 分片」算方案：否则会回报 backend=todds 同时又给
+        # gpu_workers=3，而 todds 根本不消费这两个参数（响应自相矛盾）。
+        workers = resolve_worker_plan(
+            merged_options,
+            gpu_available=False if not encoders["texconv"]["available"] else gpu_probe,
+        )
+        auto_backend = resolve_auto_backend(merged_options)
+        # 「本机方案」必须反映实际将运行的档位：显式选择且该档可用 → 所选档；
+        # 选 auto 或所选档缺失 → auto 落点（所选档缺失由档位行的下载按钮提示补装）。
+        selected_backend = str(merged_options.get("encoder_backend") or "auto")
+        selected_usable = selected_backend in {"todds", "texconv", "nvtt"} and bool(encoders[selected_backend]["available"])
+        effective_backend = selected_backend if selected_usable else auto_backend
+        # auto 在 todds 在位时固定落 todds，reason 必须区分「texconv 是否可用」，
+        # 否则会与同一响应里的 encoders.texconv.available=true 自相矛盾。
+        if auto_backend == "texconv":
+            reason = "todds 不可用,回退 texconv:混合编码(GPU BC7 + CPU BC1)约 1.5~1.8 倍速,质量 −2~4 dB(基准实测)"
+        elif encoders["texconv"]["available"]:
+            reason = "todds 可用:auto 落质量基准;texconv 可用但质量低 2~4 dB,需要速度请手动选 texconv"
+        else:
+            reason = "texconv 不可用,auto 落 todds(质量与现管线等同)"
+        # 生效分片数的来源标注：显式 options > 持久化手动覆盖 > 采样基准推荐 > 默认。
+        benchmark_state = self._load_benchmark_state()
+        overrides = benchmark_state.get("overrides") or {}
+        benchmark_payload = benchmark_state.get("benchmark") if isinstance(benchmark_state.get("benchmark"), dict) else None
+        override_values = self._load_worker_overrides()
+        source = "default"
+        if any(override_values.values()):
+            source = "manual"
+        elif benchmark_payload and any((benchmark_payload.get("recommended") or {}).values()):
+            source = "benchmark"
+        plan_payload = {
+            "backend": auto_backend,
+            "selected_backend": selected_backend,
+            "effective_backend": effective_backend,
+            "nvtt_shards": int(NvttEncoder(merged_options).resolve_shards()),
+            "gpu_workers": int(workers["gpu_workers"]),
+            "cpu_workers": int(workers["cpu_workers"]),
+            "source": source,
+            "overrides": {"gpu_workers": int(override_values.get("gpu_workers") or 0), "cpu_workers": int(override_values.get("cpu_workers") or 0)},
+            "benchmark": benchmark_payload,
+            "reason": reason,
+            "quality_note": "texconv 质量较 todds 低 2~4 dB(基准判定肉眼不可分);质量零妥协用 backend='todds'",
+            "texconv_version": texconv_version,
+            # 本工具无 scale_factor 入参 → backend 是 auto 落点；三档都能缩放
+            # （非 todds 由包装层做 PIL LANCZOS 预缩放）
+            "note": "backend 为 auto 落点;三档均支持缩放(非 todds 由包装层预缩放);"
+            "gpu_workers/cpu_workers 对 texconv 生效、对 nvtt 只决定分片数,"
+            "todds 走内置线程池不消费这两个参数",
+        }
+        return {
+            "platform": platform.system(),
+            "encoders": encoders,
+            "machine": {"cpu_logical": int(workers["cpu_logical"]), "gpu_directcompute": gpu_probe},
+            "plan": plan_payload,
+        }
+
     def prepare_tool_download(self, download_mgr, options: dict[str, Any] | None = None) -> dict[str, Any]:
+        """GUI 既有入口：下载 todds（签名与行为不变）。"""
+        return self.prepare_encoder_download(download_mgr, "todds", options)
+
+    def prepare_encoder_download(self, download_mgr, backend: str = "todds", options: dict[str, Any] | None = None) -> dict[str, Any]:
+        """todds/texconv 自动下载；**NVTT 只检测 + 给官网地址**（不发起任何下载）。"""
+        normalized_backend = str(backend or "todds").strip().lower()
+        if normalized_backend not in {"todds", "texconv", "nvtt"}:
+            raise TextureOptError(f"未知贴图编码器: {backend!r}（支持 todds/texconv/nvtt）")
+        merged_options = self._build_options(options)
+        if normalized_backend == "nvtt":
+            return self._prepare_nvtt_install_hint(merged_options)
         if platform.system() != "Windows":
             raise TextureOptError("当前自动下载工具链仅支持 Windows 平台。")
+        if normalized_backend == "todds":
+            return self._prepare_todds_download(download_mgr, merged_options)
+        return self._prepare_texconv_download(download_mgr, merged_options)
 
-        merged_options = self._build_options(options)
+    def _prepare_nvtt_install_hint(self, merged_options: dict[str, Any]) -> dict[str, Any]:
+        try:
+            NvttEncoder(merged_options).resolve_executable()
+            return {"already_ready": True}
+        except TextureOptError:
+            pass
+        return {
+            "already_ready": False,
+            "download_kind": "external",
+            "backend": "nvtt",
+            "url": NVTT_DOWNLOAD_URL,
+        }
+
+    def _prepare_todds_download(self, download_mgr, merged_options: dict[str, Any]) -> dict[str, Any]:
         status = self.get_backend_status(merged_options)
         if status["available"]: return {"already_ready": True}
 
@@ -1119,6 +1488,115 @@ class TextureOptimizationManager:
             ),
         )
         return {"already_ready": False}
+
+    def _prepare_texconv_download(self, download_mgr, merged_options: dict[str, Any]) -> dict[str, Any]:
+        try:
+            TexconvEncoder(merged_options).resolve_executable()
+            return {"already_ready": True}
+        except TextureOptError:
+            pass
+
+        from backend.managers.mgr_github import (
+            GITHUB_ARTIFACT_RELEASE_ASSET,
+            GITHUB_INSTALL_DOWNLOAD_ONLY,
+            GithubArtifactRequest,
+            GithubInstallPlan,
+            GithubInstallRequest,
+            GithubManager,
+        )
+
+        texture_tools_path = resolve_texture_tools_path(merged_options)
+        texture_tools_path.mkdir(parents=True, exist_ok=True)
+        GithubManager().install_from_github(
+            download_mgr,
+            GithubInstallRequest(
+                owner="microsoft",
+                repo="DirectXTex",
+                artifact=GithubArtifactRequest(
+                    kind=GITHUB_ARTIFACT_RELEASE_ASSET,
+                    asset_name=TEXCONV_ASSET_NAME,
+                    fallback_download_url=f"https://github.com/microsoft/DirectXTex/releases/download/{TEXCONV_FALLBACK_TAG}/{TEXCONV_ASSET_NAME}",
+                    fallback_filename=TEXCONV_ASSET_NAME,
+                    fallback_version=TEXCONV_FALLBACK_TAG,
+                    fallback_asset_name=TEXCONV_ASSET_NAME,
+                ),
+                install=GithubInstallPlan(
+                    action=GITHUB_INSTALL_DOWNLOAD_ONLY,
+                    download_dir=str(texture_tools_path),
+                ),
+                download_start_message=tr("tasks.texture.texconv_download_start", "开始下载 texconv 编码器"),
+                install_start_message=tr("tasks.texture.texconv_install_start", "texconv 编码器获取成功，正在落位..."),
+                success_toast=tr("toast.texture.texconv_download_done", "texconv 下载完成: {path}", path=str(texture_tools_path / TEXCONV_ASSET_NAME)),
+                failure_toast=tr("toast.texture.texconv_download_failed", "texconv 下载失败"),
+            ),
+        )
+        return {"already_ready": False}
+
+    # ---- 按物理路径的转换入口（不依赖 ModDAO 扫描数据）------------
+
+    def normalize_mod_paths(self, mod_paths: list[str]) -> list[dict[str, Any]]:
+        return self._normalize_mod_targets([
+            str(path or "").strip() for path in (mod_paths or []) if str(path or "").strip()
+        ])
+
+    def preview_convert_targets(self, mod_paths: list[str], options: dict[str, Any] | None = None) -> dict[str, Any]:
+        """dry_run 预演：同步扫描统计待转换量，零写盘；顺带预热扫描缓存。
+
+        聚合与逐模组统计**全部复用** ``_build_texture_plan`` 的 ``summary`` / ``rows``
+        ——即 analyze 与进度快照用的同一份（``_compose_progress_snapshot`` →
+        ``_merge_stat`` 合并全部数值键），不另写一套累加、也不另起键名。本方法只补两件
+        扫描统计里没有的事：按 ``needs_action`` 算的待转写字节量，与将选用的
+        backend / 并发方案。
+
+        summary 原样返回（单个 dict，体积与模组数无关）；``mods`` 逐模组投影到
+        ``_PREVIEW_MOD_FIELDS``（×50 个模组会随规模增长，且 ``scale_breakdown`` /
+        ``projection_basis`` 对预演无用——大载荷投影是既有约束）。
+        """
+        targets = self.normalize_mod_paths(mod_paths)
+        if not targets:
+            raise TextureOptError("没有可处理的 Mod 路径")
+        merged_options = self._build_options(options)
+        plan = self._build_texture_plan(targets, merged_options, None)
+
+        pending_bytes_by_path = {
+            str(result.get("mod_path") or ""): sum(
+                int(entry.get("source_size") or 0)
+                for entry in result.get("entries", [])
+                if isinstance(entry, dict) and bool(entry.get("needs_action"))
+            )
+            for result in plan["results"]
+        }
+        mods: list[dict[str, Any]] = []
+        for row in plan["rows"]:
+            projected = {key: row.get(key) for key in _PREVIEW_MOD_FIELDS}
+            projected["pending_source_bytes"] = int(pending_bytes_by_path.get(str(row.get("mod_path") or ""), 0))
+            mods.append(projected)
+
+        summary = dict(plan["summary"])
+        pending_source_bytes = sum(pending_bytes_by_path.values())
+        summary["pending_source_bytes"] = pending_source_bytes
+        summary["pending_source_bytes_human"] = f"{pending_source_bytes / 1048576:.1f} MiB"
+
+        # 缩放不参与后端选择（缩放由包装层预缩放承接）→ 与 get_texture_encoder_status 一样只报 auto 落点
+        backend = resolve_auto_backend(merged_options)
+        workers = resolve_worker_plan(merged_options)
+        return {
+            "mods": mods,
+            "summary": summary,
+            "backend": {
+                "backend": backend,
+                "gpu_workers": int(workers["gpu_workers"]),
+                "cpu_workers": int(workers["cpu_workers"]),
+                "note": "backend 是 auto 落点;三档均支持缩放(非 todds 由包装层做 PIL 预缩放);"
+                "GPU/CPU 并发数的实测探测见 get_texture_encoder_status",
+            },
+            "options_signature": self._build_signature(merged_options),
+        }
+
+    def list_active_tasks(self) -> list[dict[str, Any]]:
+        with self._lock:
+            tasks = list(self._tasks.values())
+        return [task.to_payload() for task in sorted(tasks, key=lambda item: item.created_at)]
 
     def analyze_mods(
         self,
@@ -1266,7 +1744,9 @@ class TextureOptimizationManager:
         options = self._build_options(task.options)
         task.options = options
         self._last_todds_log_path = ""
-        encoder = ToddsEncoder(options)
+        # 三个编码档位都支持缩放——非 todds 后端由包装层做 PIL LANCZOS 预缩放，
+        # 只有 todds 走原生 -sc。因此不按「是否缩放」挑后端，也没有 texconv 的 fail-fast。
+        encoder = create_encoder(options)
         scan_results = self._scan_targets_for_optimize(task, options)
         final_mods_by_path = {str(item["mod_path"]): dict(item["stat"]) for item in scan_results}
         entries_by_mod_path = {str(item["mod_path"]): list(item["entries"]) for item in scan_results}
@@ -1307,10 +1787,9 @@ class TextureOptimizationManager:
                     entry["zstd_had_dds_before_task"] = bool(source_text and Path(source_text).with_suffix(TEXTURE_OUTPUT_DDS_EXT).exists())
 
         def is_recoverable_encode_error(exc: Exception) -> bool:
-            if not isinstance(exc, TextureOptError):
-                return False
-            message = str(exc or "")
-            return message.startswith("todds 执行失败") or message.startswith("todds 执行超时")
+            # 工具真实跑过但本批失败/超时（ToolRunError）才逐条重试；
+            # 启动失败等配置类错误直接上抛。
+            return isinstance(exc, ToolRunError)
 
         def remember_failed_entry(entry: dict[str, Any], exc: Exception) -> None:
             logger.warning("贴图条目处理失败：rel_path=%s error=%s", entry.get("rel_path"), exc)
@@ -1365,17 +1844,35 @@ class TextureOptimizationManager:
             source_paths = [str(entry.get("source_path") or "") for entry in process_entries]
             if not source_paths:
                 return [], failed_pairs
+            # ZSTD 模式把「压缩成 .dds.zstd + 删临时 DDS」挂到编码器的单元回调上，
+            # 与剩余单元的编码重叠（todds 无单元概念 → 编码结束后整批压缩，等同旧串行）。
+            # 旧 DDS 备份在压缩期间保持原位，恢复/验证仍在编码收敛后统一进行。
+            finalizer = _ZstdFinalizer(self._finalize_zstd_batch_results) if zstd_output_mode else None
+            encode_kwargs: dict[str, Any] = {"output_callback": output_callback}
+            if finalizer is not None:
+                encode_kwargs["on_unit_done"] = finalizer.submit
             try:
                 encoder.encode_batch(
                     task._cancel_event,
+                    entries=process_entries,
                     overwrite_existing=True if zstd_output_mode else overwrite_existing,
-                    source_paths=source_paths,
                     scale_percent=scale_percent,
-                    max_size=0,
-                    output_callback=output_callback,
+                    **encode_kwargs,
                 )
                 if zstd_output_mode:
-                    successful_entries, finalize_failed_pairs = self._finalize_zstd_batch_results(process_entries)
+                    finalized_successes, finalize_failed_pairs = finalizer.collect()
+                    # 不变式：每个处理过的条目要么已压缩、要么已计失败。编码器未通过
+                    # 单元回调覆盖到的条目（todds 早退、未来新增编码器漏实现回调）在
+                    # 这里串行兜底压缩，ZSTD 产物不因回调缺失而静默丢失。
+                    seen_ids = {id(entry) for entry in finalized_successes} | {
+                        id(entry) for entry, _exc in finalize_failed_pairs
+                    }
+                    leftover = [entry for entry in process_entries if id(entry) not in seen_ids]
+                    if leftover:
+                        leftover_successes, leftover_failures = self._finalize_zstd_batch_results(leftover)
+                        finalized_successes.extend(leftover_successes)
+                        finalize_failed_pairs.extend(leftover_failures)
+                    successful_entries = finalized_successes
                     failed_pairs.extend(finalize_failed_pairs)
                     successful_dds_keys = {
                         os.path.normcase(str(Path(str(entry.get("source_path") or "")).with_suffix(TEXTURE_OUTPUT_DDS_EXT).resolve()))
@@ -1410,6 +1907,10 @@ class TextureOptimizationManager:
                 return successful_entries, failed_pairs
             except Exception:
                 if zstd_output_mode:
+                    # 编码中途失败/取消：未消费的单元直接丢弃（其临时 DDS 由下面的
+                    # cleanup+restore 兜底）；已压缩完成的条目保留 .zstd——与任务取消
+                    # 语义「已完成部分保留」一致，旧 DDS 仍会恢复回源旁。
+                    finalizer.abort()
                     self._cleanup_generated_zstd_dds(process_entries, backups)
                     self._restore_zstd_dds_backups(backups, keep_old_dds=True)
                 raise
@@ -1449,7 +1950,7 @@ class TextureOptimizationManager:
             scale_percent = batch.get("scale_percent")
             scale_label = f"{int(scale_percent)}%" if scale_percent is not None else "原尺寸"
 
-            def handle_todds_output(line: str) -> None:
+            def handle_encoder_output(line: str) -> None:
                 nonlocal last_batch_progress, batch_total_hint, last_live_emit_at
                 match = TODDS_PROGRESS_PATTERN.search(str(line or ""))
                 if not match:
@@ -1474,7 +1975,7 @@ class TextureOptimizationManager:
                     message=(
                         tr(
                             "tasks.texture.encode_batch_wait",
-                            "等待 todds 完成本批写入: 第 {batch_index}/{batch_total} 批 ({scale_label})",
+                            "等待编码器完成本批写入: 第 {batch_index}/{batch_total} 批 ({scale_label})",
                             {"batch_index": batch_index, "batch_total": max(1, len(batches)), "scale_label": scale_label},
                         )
                         if batch_finishing
@@ -1511,12 +2012,12 @@ class TextureOptimizationManager:
                     batch["entries"],
                     overwrite_existing=bool(batch["overwrite_existing"]),
                     scale_percent=batch["scale_percent"],
-                    output_callback=handle_todds_output,
+                    output_callback=handle_encoder_output,
                 )
             except TextureOptCancelled:
                 raise
             except Exception as exc:
-                self._remember_todds_log_path(exc)
+                self._remember_encoder_log_path(exc)
                 if not is_recoverable_encode_error(exc):
                     raise
                 already_done: list[dict[str, Any]] = []
@@ -1663,7 +2164,7 @@ class TextureOptimizationManager:
                 except TextureOptCancelled:
                     raise
                 except Exception as exc:
-                    self._remember_todds_log_path(exc)
+                    self._remember_encoder_log_path(exc)
                     if not is_recoverable_encode_error(exc):
                         raise
                     single_retry_entries = retry_entries
@@ -1692,7 +2193,7 @@ class TextureOptimizationManager:
                     except TextureOptCancelled:
                         raise
                     except Exception as exc:
-                        self._remember_todds_log_path(exc)
+                        self._remember_encoder_log_path(exc)
                         if not is_recoverable_encode_error(exc):
                             raise
                         process_failures += 1
@@ -1926,27 +2427,42 @@ class TextureOptimizationManager:
         retryable_winerror = {32, 33}  # Windows 文件共享/锁定冲突
         return getattr(exc, "errno", None) in retryable_errno or getattr(exc, "winerror", None) in retryable_winerror
 
-    @staticmethod
-    def _compress_dds_to_zstd(dds_path: Path, zstd_path: Path) -> int:
+    # ZstdCompressor 实例不做跨线程的同步保护（同一实例不得同时在多个线程使用），
+    # 按线程各持一个复用实例：既规避共享约束，又省去每次十余毫秒的上下文重建。
+    _zstd_compressor_local = threading.local()
+
+    @classmethod
+    def _get_zstd_compressor(cls):
         try:
             import zstandard as zstd
         except ImportError as exc:
-            raise TextureOptError("当前环境缺少 zstandard，无法生成 ZSTD 贴图。") from exc
+            raise _ZstdFatalError("当前环境缺少 zstandard，无法生成 ZSTD 贴图。") from exc
+        compressor = getattr(cls._zstd_compressor_local, "compressor", None)
+        if compressor is not None:
+            return compressor
         compressor_class = getattr(zstd, "ZstdCompressor", None)
         if compressor_class is None:
             try:
                 from zstandard.backend_c import ZstdCompressor as compressor_class
             except ImportError as exc:
-                raise TextureOptError("当前 zstandard 安装不完整，无法生成 ZSTD 贴图。") from exc
+                raise _ZstdFatalError("当前 zstandard 安装不完整，无法生成 ZSTD 贴图。") from exc
+        # level=0 是 libzstd 语义的「默认级别」（ZSTD_CLEVEL_DEFAULT，即 3），不是不压缩
+        compressor = compressor_class(level=0)
+        cls._zstd_compressor_local.compressor = compressor
+        return compressor
 
+    @classmethod
+    def _compress_dds_to_zstd(cls, dds_path: Path, zstd_path: Path) -> int:
+        # 一次性 compress()（整读进内存）：DDS 单文件最大几十 MB，内存代价可忽略；
+        # copy_stream 的 128KB 分块循环要多走数倍 Python 层开销，是官方文档明示的慢路径
         if not dds_path.exists():
             raise TextureOptError(f"todds 未生成临时 DDS，无法压缩为 ZSTD: {dds_path}")
+        compressor = cls._get_zstd_compressor()
+        payload = dds_path.read_bytes()
         zstd_path.parent.mkdir(parents=True, exist_ok=True)
         temp_path = zstd_path.with_name(f"{zstd_path.name}.tmp-{uuid.uuid4().hex}")
         try:
-            compressor = compressor_class(level=0)
-            with dds_path.open("rb") as source, temp_path.open("wb") as target:
-                compressor.copy_stream(source, target)
+            temp_path.write_bytes(compressor.compress(payload))
             temp_path.replace(zstd_path)
             return int(zstd_path.stat().st_size)
         finally:
@@ -2009,13 +2525,12 @@ class TextureOptimizationManager:
             source_path = Path(source_text)
             dds_path = source_path.with_suffix(TEXTURE_OUTPUT_DDS_EXT)
             zstd_path = source_path.with_suffix(TEXTURE_OUTPUT_ZSTD_EXT)
-            # ZSTD 模式复用 todds 的 DDS 编码结果，再压缩成 Image Opt 可读取的同名文件。
+            # ZSTD 模式复用编码器的 DDS 编码结果，再压缩成 Image Opt 可读取的同名文件。
             try:
                 self._run_zstd_file_operation(lambda: self._compress_dds_to_zstd(dds_path, zstd_path), action="compress_zstd", path=zstd_path)
+            except _ZstdFatalError:
+                raise
             except TextureOptError as exc:
-                message = str(exc or "")
-                if message.startswith("当前环境缺少 zstandard") or message.startswith("当前 zstandard 安装不完整"):
-                    raise
                 return None, (entry, exc)
             except OSError as exc:
                 return None, (entry, TextureOptError(f"压缩 ZSTD 失败: {dds_path}，{exc}"))
@@ -3125,6 +3640,36 @@ class TextureOptimizationManager:
         merged["clean_without_source"] = TextureOptimizationManager._normalize_bool(merged.get("clean_without_source", False), False)
         merged["clean_output_format"] = TextureOptimizationManager._normalize_clean_output_format(merged)
         merged["zstd_clean_old_dds"] = TextureOptimizationManager._normalize_bool(merged.get("zstd_clean_old_dds", False), False)
+        encoder_backend = str(merged.get("encoder_backend") or "todds").strip().lower()
+        merged["encoder_backend"] = encoder_backend if encoder_backend in {"auto", "texconv", "todds", "nvtt"} else "todds"
+        for worker_key in ("gpu_workers", "cpu_workers"):
+            # 持久化注入（texture_benchmark.json）只在调用方未给有效显式值时生效：
+            # 生效链 = 显式 options > 持久化手动覆盖 > 采样基准推荐 > resolve_worker_plan 默认。
+            try:
+                explicit_value = int(merged.get(worker_key)) if merged.get(worker_key) is not None else 0
+            except (TypeError, ValueError):
+                explicit_value = 0
+            if not (MIN_TEXTURE_WORKERS <= explicit_value <= MAX_TEXTURE_WORKERS):
+                fallback = 0
+                override_value = TextureOptimizationManager._load_worker_overrides().get(worker_key) or 0
+                try:
+                    fallback = int(override_value)
+                except (TypeError, ValueError):
+                    fallback = 0
+                if not (MIN_TEXTURE_WORKERS <= fallback <= MAX_TEXTURE_WORKERS):
+                    recommended = ((TextureOptimizationManager._load_benchmark_state().get("benchmark") or {}).get("recommended") or {}).get(worker_key)
+                    try:
+                        fallback = int(recommended or 0)
+                    except (TypeError, ValueError):
+                        fallback = 0
+                if MIN_TEXTURE_WORKERS <= fallback <= MAX_TEXTURE_WORKERS:
+                    merged[worker_key] = fallback
+        for worker_key in ("gpu_workers", "cpu_workers"):
+            try:
+                worker_value = int(merged.get(worker_key)) if merged.get(worker_key) is not None else 0
+            except (TypeError, ValueError):
+                worker_value = 0
+            merged[worker_key] = worker_value if MIN_TEXTURE_WORKERS <= worker_value <= MAX_TEXTURE_WORKERS else None
         merged["texture_tools_path"] = str(resolve_texture_tools_path(merged))
         return merged
 

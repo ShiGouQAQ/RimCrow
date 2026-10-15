@@ -26,6 +26,29 @@
                     </div>
                   </div>
 
+                  <!-- 贴图转换档位状态（只读） -->
+                  <div class="modal-section space-y-3 p-5">
+                    <div>
+                      <h4 class="text-sm font-bold text-text-main">{{ t('ui.settings.external.encoders_title', '贴图转换档位') }}</h4>
+                      <p class="text-xs text-text-dim mt-1">{{ t('ui.settings.external.encoders_desc', '贴图转换可选三种档位，其中中等档需要先安装 NVIDIA 提供的工具。') }}</p>
+                    </div>
+                    <div v-for="row in textureStore.encoderRows" :key="row.backend" class="flex items-center justify-between gap-3">
+                      <div class="min-w-0">
+                        <div class="flex items-center gap-2">
+                          <span class="text-sm font-bold text-text-main">{{ row.label }}</span>
+                          <span class="text-xs" :class="row.available ? 'text-accent-success' : (row.checked ? 'text-accent-danger' : 'text-text-dim')">{{ row.statusText }}</span>
+                        </div>
+                        <p v-if="row.detail" class="text-xs text-text-dim truncate">{{ row.detail }}</p>
+                      </div>
+                      <button v-if="row.actionLabel" type="button" :aria-label="row.actionLabel" v-tooltip="row.actionLabel"
+                        @click="textureStore.downloadEncoder(row.backend)"
+                        class="shrink-0 h-9 w-9 bg-accent-tip/10 hover:bg-accent-tip text-accent-tip hover:text-text-main border border-accent-tip/30 rounded-lg flex items-center justify-center transition-all">
+                        <ExternalLink v-if="row.backend === 'nvtt'" class="size-4" />
+                        <Download v-else class="size-4" />
+                      </button>
+                    </div>
+                  </div>
+
                   <div class="modal-section space-y-4 p-5">
                     <div class="flex items-center justify-between gap-3">
                       <div> <h4 class="text-sm font-bold text-text-main">{{ t('ui.settings.external.data_libraries', '外部库与规则') }}</h4><p class="text-xs text-text-dim mt-1">{{ t('ui.settings.external.data_libraries_desc', '规则库、工坊数据库、替代库等外部数据文件的来源、路径和更新检查。') }}</p></div>
@@ -118,14 +141,15 @@
 </template>
 
 <script setup>
-import { computed, ref } from 'vue'
-import { Download, LoaderCircle } from 'lucide-vue-next'
+import { computed, onMounted, ref } from 'vue'
+import { Download, ExternalLink, LoaderCircle } from 'lucide-vue-next'
 import CommonPathInput from '../../../shared/components/input/CommonPathInput.vue'
 import CommonSwitch from '../../../shared/components/input/CommonSwitch.vue'
 import CommonInput from '../../../shared/components/input/CommonInput.vue'
 import CommonNumber from '../../../shared/components/input/CommonNumber.vue'
 import { useAppStore } from '../../../app/stores/appStore'
 import { useRuleStore } from '../../rules/ruleStore'
+import { useTextureStore } from '../../texture-opt/textureStore'
 import { t } from '../../../shared/i18n.js'
 
 const props = defineProps({
@@ -136,6 +160,12 @@ const props = defineProps({
 
 const appStore = useAppStore()
 const ruleStore = useRuleStore()
+const textureStore = useTextureStore()
+
+// 进入本页时读取一次三档转换工具状态
+onMounted(() => {
+  textureStore.checkEncoderStatus()
+})
 
 const downloadState = ref({
   workshop_db: false,

@@ -30,6 +30,7 @@ SPLASH_PATH = "splash.png"
 DEFAULT_PACK_CONFIG: dict[str, Any] = {
     "steps": {
         "frontend": True,
+        "bridge": True,
         "app": True,
         "docs": True,
         "tree": True,
@@ -380,7 +381,10 @@ def packApplication(main_file="main.py", icon_path="", name="", splash_path="", 
         # 这里显式补齐 tiktoken / tiktoken_ext，避免打包后出现：
         # Unknown encoding cl100k_base / Plugins found: []
         pyinstaller_args = [
-            "uv", "run", "pyinstaller", # 使用uv运行pyinstaller
+            # `uv run pyinstaller` relies on the uv console-script trampoline, which fails with
+            # "failed to canonicalize script path" inside git worktrees; `python -m PyInstaller`
+            # resolves the same venv entry point without the trampoline.
+            sys.executable, "-m", "PyInstaller",
             "-w",  # 无控制台窗口
             "--noconfirm",  # 跳过确认提示
             "--paths", str(steamworkspy_source_dir),
@@ -394,7 +398,17 @@ def packApplication(main_file="main.py", icon_path="", name="", splash_path="", 
             "--collect-submodules", "tiktoken_ext",
             "--hidden-import", "tiktoken_ext",
             "--hidden-import", "tiktoken_ext.openai_public",
-            
+
+            # FastMCP：MCP 工具层 + 内嵌端点依赖它（生产 stdio 入口
+            # 是独立的 rimcrow-mcp.exe，不进本包）。包元数据必须随包收集，否则
+            # importlib.metadata 查 fastmcp/fastmcp-slim 会直接抛 PackageNotFoundError；
+            # collect-submodules 覆盖其动态 provider 树
+            # （skills/fastmcp_provider 等按名加载）。
+            "--copy-metadata", "fastmcp",
+            "--copy-metadata", "fastmcp-slim",
+            "--copy-metadata", "mcp",
+            "--collect-submodules", "fastmcp",
+
             # 排除一些可能导致问题的模块
             "--exclude-module", "setuptools",  # 排除这个模块， 避免打包时出现问题
             # "--exclude-module", "_distutils_hack.override",
@@ -589,6 +603,12 @@ def create_release_zip(app_name: str, version: str, docs_dir: Path | None = None
     archive_root = Path(app_name)
 
     release_items = list(_iter_release_output_files(output_path))
+    # 双产物：rimcrow-mcp.exe 与主 exe 同批发布
+    bridge_exe = dist_dir / "rimcrow-mcp.exe"
+    if bridge_exe.exists():
+        release_items.append((bridge_exe, Path(bridge_exe.name)))
+    else:
+        print("警告: dist/rimcrow-mcp.exe 缺失，发布包将不含生产 stdio 入口（build_bridge 未跑？）")
     release_items.extend(_iter_toolmods_files(project_root / "toolmods" / "RimCrowCompanion") or [])
     release_items.extend(_iter_tools_files(project_root / "tools") or [])
     release_items.extend(_iter_data_files(project_root / "data") or [])
@@ -616,6 +636,69 @@ def buildFrontend(start_path: str = 'frontend'):
     构建前端项目
     """
     subprocess.run([_npm_command(), "run", "build"], cwd=start_path, check=True, text=True, encoding='utf-8')
+
+
+# --- 双产物构建：rimcrow-mcp.exe（Rust 桥）--------------------------------
+
+def _find_bridge_crate() -> Path | None:
+    """定位 dev/rimcrow-mcp crate（与 RimCrow 仓库解耦的兄弟目录；env 可覆盖）。"""
+    override = os.environ.get("RIMCROW_BRIDGE_CRATE")
+    if override and (Path(override) / "Cargo.toml").exists():
+        return Path(override)
+    project_root = Path(__file__).resolve().parent
+    for ancestor in (project_root, *project_root.parents):
+        crate = ancestor / "rimcrow-mcp"
+        if (crate / "Cargo.toml").exists():
+            return crate
+    return None
+
+
+def build_bridge(version: str) -> bool:
+    """构建流程：快照生成 → cargo build --release → 产物入 dist。
+
+    主 exe 与 bridge **同一条流水线同批产出**——工具面变更时两者一起重发，
+    嵌入快照（tools-cache.json）即保证版本对齐。
+    """
+    project_root = Path(__file__).resolve().parent
+    crate = _find_bridge_crate()
+    if crate is None:
+        print("跳过 rimcrow-mcp.exe：找不到 rimcrow-mcp crate（RIMCROW_BRIDGE_CRATE 可覆盖）")
+        return False
+
+    print(f"=== 构建 rimcrow-mcp.exe（crate: {crate}）===")
+    # 1. 快照生成（嵌入文件，统一从 mcp_tool_specs 导出，不要复制字面量）
+    gen = project_root / "scripts" / "gen_tool_cache.py"
+    if gen.exists():
+        result = subprocess.run(
+            [sys.executable, str(gen)], cwd=str(project_root), capture_output=True, text=True
+        )
+        sys.stdout.write(result.stdout)
+        if result.returncode != 0:
+            print(f"快照生成失败（退出码 {result.returncode}）：\n{result.stderr[-800:]}")
+            return False
+    else:
+        print("警告: scripts/gen_tool_cache.py 缺失，bridge 将嵌入既有 tools-cache.json")
+
+    # 2. cargo build --release
+    result = subprocess.run(
+        ["cargo", "build", "--release", "--manifest-path", str(crate / "Cargo.toml")],
+        capture_output=True, text=True,
+    )
+    if result.returncode != 0:
+        print(f"cargo build 失败（退出码 {result.returncode}）：\n{result.stdout[-800:]}\n{result.stderr[-1200:]}")
+        return False
+
+    # 3. 双产物同批入 dist
+    exe = crate / "target" / "release" / "rimcrow-mcp.exe"
+    if not exe.exists():
+        print(f"cargo build 成功但产物缺失: {exe}")
+        return False
+    dist_dir = project_root / "dist"
+    dist_dir.mkdir(exist_ok=True)
+    target = dist_dir / exe.name
+    shutil.copy2(exe, target)
+    print(f"★ rimcrow-mcp.exe 已入 dist: {target}（{target.stat().st_size} 字节, v{version}）")
+    return True
 
 
 # --- 优化后的目录树生成 ---
@@ -762,6 +845,12 @@ def main(argv: list[str] | None = None) -> int:
         buildFrontend(start_path="frontend")
     else:
         print("提示: 已跳过前端构建。")
+
+    if steps.get("bridge", True):
+        print("=== 构建 rimcrow-mcp.exe（Rust 桥，双产物）===")
+        build_bridge(app_version)
+    else:
+        print("提示: 已跳过 rimcrow-mcp.exe 构建。")
 
     if steps.get("app", True):
         print(f"=== 开始打包 {APP_NAME} v{app_version} ===")

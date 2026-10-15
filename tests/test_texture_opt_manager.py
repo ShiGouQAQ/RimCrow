@@ -12,7 +12,21 @@ from unittest.mock import patch
 from PIL import Image
 
 import backend.managers.mgr_texture_opt as texture_opt_module
-from backend.managers.mgr_texture_opt import _ToolProcessRunner, ToddsEncoder, TextureOptimizationManager, TextureTask
+import backend.managers.texture_encoders as texture_encoders
+from backend.managers.mgr_texture_opt import TextureOptimizationManager, TextureTask, _ZstdFatalError, _ZstdFinalizer
+from backend.managers.texture_encoders import (
+    NvttEncoder,
+    TexconvEncoder,
+    TextureOptCancelled,
+    TextureOptError,
+    ToddsEncoder,
+    _ToolProcessRunner,
+)
+
+
+def _fake_paths(entries):
+    """entries 协议：fake 内从扫描条目取 source_path。"""
+    return [str(entry.get("source_path") or "") for entry in (entries or [])]
 
 
 class TestTextureOptimizationManager(unittest.TestCase):
@@ -430,15 +444,14 @@ class TestTextureOptimizationManager(unittest.TestCase):
         def fake_encode_batch(
             _cancel_event,
             *,
-            source_paths,
+            entries,
             overwrite_existing,
             scale_percent,
-            max_size=None,
             output_callback=None,
+            on_unit_done=None,
         ):
-            self.assertEqual(source_paths, [str(source)])
+            self.assertEqual(_fake_paths(entries), [str(source)])
             self.assertIsNone(scale_percent)
-            self.assertEqual(max_size, 0)
             source.with_suffix(".dds").write_bytes(b"dds")
 
         with patch.object(ToddsEncoder, "encode_batch", side_effect=fake_encode_batch):
@@ -467,13 +480,13 @@ class TestTextureOptimizationManager(unittest.TestCase):
         def fake_encode_batch(
             _cancel_event,
             *,
-            source_paths,
+            entries,
             overwrite_existing,
             scale_percent,
-            max_size=None,
             output_callback=None,
+            on_unit_done=None,
         ):
-            calls.append((overwrite_existing, list(source_paths or [])))
+            calls.append((overwrite_existing, _fake_paths(entries)))
             source.with_suffix(".dds").write_bytes(b"new-dds")
 
         with patch.object(ToddsEncoder, "encode_batch", side_effect=fake_encode_batch):
@@ -506,13 +519,13 @@ class TestTextureOptimizationManager(unittest.TestCase):
         def fake_encode_batch(
             _cancel_event,
             *,
-            source_paths,
+            entries,
             overwrite_existing,
             scale_percent,
-            max_size=None,
             output_callback=None,
+            on_unit_done=None,
         ):
-            for source_path in source_paths or []:
+            for source_path in _fake_paths(entries):
                 Path(source_path).with_suffix(".dds").write_bytes(b"new-dds")
 
         def fake_compress(dds_path, zstd_path):
@@ -553,11 +566,11 @@ class TestTextureOptimizationManager(unittest.TestCase):
         def fake_encode_batch(
             _cancel_event,
             *,
-            source_paths,
+            entries,
             overwrite_existing,
             scale_percent,
-            max_size=None,
             output_callback=None,
+            on_unit_done=None,
         ):
             source.with_suffix(".dds").write_bytes(b"new-dds")
 
@@ -581,14 +594,14 @@ class TestTextureOptimizationManager(unittest.TestCase):
         def fake_encode_batch(
             _cancel_event,
             *,
-            source_paths,
+            entries,
             overwrite_existing,
             scale_percent,
-            max_size=None,
             output_callback=None,
+            on_unit_done=None,
         ):
             self.assertTrue(overwrite_existing)
-            for source_path in source_paths or []:
+            for source_path in _fake_paths(entries):
                 if Path(source_path) == good:
                     Path(source_path).with_suffix(".dds").write_bytes(b"dds")
 
@@ -633,13 +646,13 @@ class TestTextureOptimizationManager(unittest.TestCase):
         def fake_encode_batch(
             _cancel_event,
             *,
-            source_paths,
+            entries,
             overwrite_existing,
             scale_percent,
-            max_size=None,
             output_callback=None,
+            on_unit_done=None,
         ):
-            for source_path in source_paths or []:
+            for source_path in _fake_paths(entries):
                 if Path(source_path) == good:
                     Path(source_path).with_suffix(".dds").write_bytes(b"new-good")
 
@@ -683,13 +696,13 @@ class TestTextureOptimizationManager(unittest.TestCase):
         def fake_encode_batch(
             _cancel_event,
             *,
-            source_paths,
+            entries,
             overwrite_existing,
             scale_percent,
-            max_size=None,
             output_callback=None,
+            on_unit_done=None,
         ):
-            for source_path in source_paths or []:
+            for source_path in _fake_paths(entries):
                 Path(source_path).with_suffix(".dds").write_bytes(b"new-dds")
 
         def fake_compress(dds_path, zstd_path):
@@ -721,13 +734,13 @@ class TestTextureOptimizationManager(unittest.TestCase):
         def fake_encode_batch(
             _cancel_event,
             *,
-            source_paths,
+            entries,
             overwrite_existing,
             scale_percent,
-            max_size=None,
             output_callback=None,
+            on_unit_done=None,
         ):
-            self.assertEqual(source_paths, [str(source)])
+            self.assertEqual(_fake_paths(entries), [str(source)])
             source.with_suffix(".dds").write_bytes(b"dds")
 
         with patch.object(self.manager, "_build_mod_base_index", wraps=original_build) as build_mock, \
@@ -919,15 +932,14 @@ class TestTextureOptimizationManager(unittest.TestCase):
         def fake_encode_batch(
             _cancel_event,
             *,
-            source_paths,
+            entries,
             overwrite_existing,
             scale_percent,
-            max_size=None,
             output_callback=None,
+            on_unit_done=None,
         ):
-            calls.append((overwrite_existing, list(source_paths or [])))
+            calls.append((overwrite_existing, _fake_paths(entries)))
             self.assertIsNone(scale_percent)
-            self.assertEqual(max_size, 0)
             output.write_bytes(b"new")
 
         with patch.object(ToddsEncoder, "encode_batch", side_effect=fake_encode_batch):
@@ -1029,21 +1041,20 @@ class TestTextureOptimizationManager(unittest.TestCase):
         def fake_encode_batch(
             _cancel_event,
             *,
-            source_paths,
+            entries,
             overwrite_existing,
             scale_percent,
-            max_size=None,
             output_callback=None,
+            on_unit_done=None,
         ):
             calls.append(
                 {
                     "overwrite_existing": overwrite_existing,
-                    "source_paths": list(source_paths or []),
+                    "source_paths": _fake_paths(entries),
                     "scale_percent": scale_percent,
-                    "max_size": max_size,
                 }
             )
-            for source_path in source_paths or []:
+            for source_path in _fake_paths(entries):
                 Path(source_path).with_suffix(".dds").write_bytes(b"dds")
 
         with patch.object(ToddsEncoder, "encode_batch", side_effect=fake_encode_batch):
@@ -1060,13 +1071,11 @@ class TestTextureOptimizationManager(unittest.TestCase):
                     "overwrite_existing": True,
                     "source_paths": [str(scaled_source)],
                     "scale_percent": 50,
-                    "max_size": 0,
                 },
                 {
                     "overwrite_existing": True,
                     "source_paths": [str(fallback_source)],
                     "scale_percent": None,
-                    "max_size": 0,
                 },
             ],
         )
@@ -1085,15 +1094,15 @@ class TestTextureOptimizationManager(unittest.TestCase):
         def fake_encode_batch(
             _cancel_event,
             *,
-            source_paths,
+            entries,
             overwrite_existing,
             scale_percent,
-            max_size=None,
             output_callback=None,
+            on_unit_done=None,
         ):
             self.assertTrue(callable(output_callback))
             output_callback("Progress: 1 / 1")
-            for source_path in source_paths or []:
+            for source_path in _fake_paths(entries):
                 Path(source_path).with_suffix(".dds").write_bytes(b"dds")
 
         def capture_progress(_task_id, _task_type, **payload):
@@ -1121,14 +1130,14 @@ class TestTextureOptimizationManager(unittest.TestCase):
         def fake_encode_batch(
             _cancel_event,
             *,
-            source_paths,
+            entries,
             overwrite_existing,
             scale_percent,
-            max_size=None,
             output_callback=None,
+            on_unit_done=None,
         ):
-            calls.append({"source_paths": list(source_paths or []), "scale_percent": scale_percent})
-            for source_path in source_paths or []:
+            calls.append({"source_paths": _fake_paths(entries), "scale_percent": scale_percent})
+            for source_path in _fake_paths(entries):
                 Path(source_path).with_suffix(".dds").write_bytes(b"dds")
 
         with patch.object(ToddsEncoder, "encode_batch", side_effect=fake_encode_batch):
@@ -1332,7 +1341,6 @@ class TestToddsEncoder(unittest.TestCase):
                 "overwrite_existing": False,
                 "generate_mipmaps": True,
                 "scale_factor": 0.5,
-                "max_size": 1024,
             }
         )
 
@@ -1351,8 +1359,7 @@ class TestToddsEncoder(unittest.TestCase):
             self.assertNotIn("-fs", command)
             self.assertIn("-sc", command)
             self.assertIn("50", command)
-            self.assertIn("-ms", command)
-            self.assertIn("1024", command)
+            self.assertNotIn("-ms", command)  # -ms（max_size）不进命令（本协议无此参数）
             self.assertNotIn("-ss", command)
             input_list = Path(command[-1])
             self.assertEqual(input_list.suffix.lower(), ".txt")
@@ -1360,13 +1367,235 @@ class TestToddsEncoder(unittest.TestCase):
             self.assertIn(str(self.source), input_list.read_text(encoding="utf-8"))
 
         with patch.object(ToddsEncoder, "resolve_executable", return_value=self.temp_root / "todds.exe"), \
-             patch("backend.managers.mgr_texture_opt._ToolProcessRunner.run_command", side_effect=inspect_todds_command):
+             patch("backend.managers.texture_encoders._ToolProcessRunner.run_command", side_effect=inspect_todds_command):
             encoder.encode_batch(
                 threading.Event(),
-                source_paths=[str(self.source)],
+                entries=[{"source_path": str(self.source)}],
                 overwrite_existing=False,
                 scale_percent=50,
             )
+
+
+class TestTextureZstdPipeline(unittest.TestCase):
+    """ZSTD 后台压缩管线与档位判定。
+
+    - 单元回调把「压缩成 .dds.zstd」与剩余单元的编码重叠；
+    - 编码失败/取消时已完成单元的 .zstd 保留、任务前的 DDS 恢复；
+    - 编码器漏发单元回调时串行兜底，ZSTD 产物不静默丢失；
+    - NVTT 在 ZSTD 投影下仍写源旁 .dds（回归 NVTT×ZSTD 整批失败）；
+    - get_backend_status / get_encoder_status / start_benchmark 按所选档位判定。
+    """
+
+    def setUp(self):
+        self.temp_root = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, self.temp_root, ignore_errors=True)
+        self.mod_root = self.temp_root / "ExampleMod"
+        (self.mod_root / "Textures").mkdir(parents=True)
+        self.manager = TextureOptimizationManager()
+        self.options = {
+            "texture_tools_path": str(self.temp_root / "tools"),
+            "process_mode": "all_overwrite",
+            "output_format": "zstd",
+            "generate_mipmaps": True,
+            "scale_factor": 1.0,
+            "skip_small_textures": True,
+            "min_dimension": 128,
+            "max_source_dimension": 2048,
+        }
+
+    def _write_png(self, name: str, size=(128, 128)) -> Path:
+        path = self.mod_root / "Textures" / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        Image.new("RGB", size, (255, 0, 0)).save(path)
+        return path
+
+    def _zstd_task(self, **extra_options) -> TextureTask:
+        return TextureTask(
+            id="zstd-pipeline",
+            action="optimize",
+            mod_paths=[str(self.mod_root)],
+            options={**self.options, **extra_options},
+            status="running",
+        )
+
+    @staticmethod
+    def _wait_for(path: Path, timeout_seconds: float = 5.0) -> bool:
+        deadline = time.monotonic() + timeout_seconds
+        while time.monotonic() < deadline:
+            if path.exists():
+                return True
+            time.sleep(0.01)
+        return False
+
+    def test_unit_finalize_overlaps_encode(self):
+        source = self._write_png("unit.png")
+        task = self._zstd_task()
+
+        def fake_encode_batch(_cancel_event, *, entries, overwrite_existing, scale_percent, output_callback=None, on_unit_done=None):
+            for entry in entries:
+                Path(entry["source_path"]).with_suffix(".dds").write_bytes(b"new-dds")
+                on_unit_done([entry])
+            # 编码返回前，单元回调触发的压缩应当已经完成（重叠生效的直接证据）
+            self.assertTrue(self._wait_for(source.with_suffix(".dds.zstd")))
+
+        with patch.object(ToddsEncoder, "encode_batch", side_effect=fake_encode_batch):
+            self.manager._optimize(task)
+
+        self.assertTrue(source.with_suffix(".dds.zstd").exists())
+        self.assertFalse(source.with_suffix(".dds").exists())  # 临时 DDS 已清理
+
+    def test_cancelled_encode_keeps_finalized_outputs_and_restores_old_dds(self):
+        good = self._write_png("good.png")
+        bad = self._write_png("bad.png")
+        for source in (good, bad):
+            source.with_suffix(".dds").write_bytes(b"old-dds")
+        task = self._zstd_task()
+        finalized: list[Path] = []
+
+        def fake_encode_batch(_cancel_event, *, entries, overwrite_existing, scale_percent, output_callback=None, on_unit_done=None):
+            first = entries[0]
+            Path(first["source_path"]).with_suffix(".dds").write_bytes(b"new-dds")
+            on_unit_done([first])
+            self.assertTrue(self._wait_for(Path(first["source_path"]).with_suffix(".dds.zstd")))
+            finalized.append(Path(first["source_path"]))
+            raise TextureOptCancelled("贴图优化任务已取消")
+
+        with patch.object(ToddsEncoder, "encode_batch", side_effect=fake_encode_batch):
+            with self.assertRaises(TextureOptCancelled):
+                self.manager._optimize(task)
+
+        from zstandard.backend_c import ZstdDecompressor
+
+        first = finalized[0]
+        other = bad if first == good else good
+        with first.with_suffix(".dds.zstd").open("rb") as compressed:
+            with ZstdDecompressor().stream_reader(compressed) as reader:
+                self.assertEqual(reader.read(), b"new-dds")
+        # 已完成单元保留 .zstd（取消语义：已完成部分保留），任务前的 DDS 回到源旁
+        self.assertEqual(first.with_suffix(".dds").read_bytes(), b"old-dds")
+        self.assertFalse(other.with_suffix(".dds.zstd").exists())
+        self.assertEqual(other.with_suffix(".dds").read_bytes(), b"old-dds")
+
+    def test_missing_unit_callback_falls_back_to_serial_finalize(self):
+        # 编码器不调用单元回调（协议缺失/提前返回）时，兜底压缩保证产物不静默丢失
+        source = self._write_png("serial.png")
+        task = self._zstd_task()
+
+        def fake_encode_batch(_cancel_event, *, entries, overwrite_existing, scale_percent, output_callback=None, on_unit_done=None):
+            for entry in entries:
+                Path(entry["source_path"]).with_suffix(".dds").write_bytes(b"new-dds")
+
+        with patch.object(ToddsEncoder, "encode_batch", side_effect=fake_encode_batch):
+            result = self.manager._optimize(task)
+
+        self.assertEqual(result["optimized"], 1)
+        self.assertTrue(source.with_suffix(".dds.zstd").exists())
+
+    def test_nvtt_zstd_mode_writes_dds_beside_source(self):
+        # 回归：NVTT 曾把 output_path（.dds.zstd 产物投影）直接当 -o，未压缩 DDS
+        # 被写进 .zstd 文件且管理器找不到临时 DDS 可压缩，整批必坏
+        source = self._write_png("nvtt.png")
+        source.with_suffix(".dds").write_bytes(b"old-dds")
+        task = self._zstd_task(encoder_backend="nvtt")
+
+        def fake_run(command, cancel_event, timeout_seconds=None, *, tool_name=None, output_callback=None):
+            batch = command[command.index("--batch") + 1]
+            for line in Path(batch).read_text(encoding="utf-8").splitlines():
+                target = line.split('-o "')[1].split('"')[0]
+                Path(target).write_bytes(b"new-dds")
+
+        with patch.object(NvttEncoder, "resolve_executable", return_value=self.temp_root / "nvtt_export.exe"), \
+             patch.object(texture_encoders._ToolProcessRunner, "run_command", side_effect=fake_run):
+            result = self.manager._optimize(task)
+
+        self.assertEqual(result["optimized"], 1)
+        self.assertTrue(source.with_suffix(".dds.zstd").exists())
+        self.assertEqual(source.with_suffix(".dds").read_bytes(), b"old-dds")  # 旧 DDS 恢复
+
+    def test_zstd_finalizer_collect_and_abort(self):
+        started = threading.Event()
+        release = threading.Event()
+
+        def blocking_chunk(entries):
+            started.set()
+            release.wait(5)
+            return list(entries), []
+
+        finalizer = _ZstdFinalizer(blocking_chunk)
+        finalizer.submit(["in-flight"])
+        self.assertTrue(started.wait(5))  # 在途压缩占用消费线程
+        finalizer.submit(["pending"])  # 排队未消费
+
+        abort_done = threading.Event()
+
+        def do_abort():
+            finalizer.abort()
+            abort_done.set()
+
+        aborter = threading.Thread(target=do_abort, daemon=True)
+        aborter.start()
+        time.sleep(0.05)  # 在途压缩未释放前，abort 必须阻塞等待而不是立刻返回
+        self.assertFalse(abort_done.is_set())
+        release.set()
+        self.assertTrue(abort_done.wait(5))  # 在途压缩完成后 abort 收敛
+        self.assertFalse(finalizer._thread.is_alive())
+
+    def test_zstd_finalizer_propagates_fatal_error(self):
+        # 致命配置错误（缺 zstandard 等）必须整批中止：消费线程暂存、collect 重抛，
+        # 而不是把每个条目记成失败后让任务「完成」
+        def fatal_chunk(entries):
+            raise _ZstdFatalError("当前环境缺少 zstandard，无法生成 ZSTD 贴图。")
+
+        finalizer = _ZstdFinalizer(fatal_chunk)
+        finalizer.submit([{"entry": 1}])
+        with self.assertRaises(_ZstdFatalError):
+            finalizer.collect()
+        self.assertFalse(finalizer._thread.is_alive())
+
+    def test_get_backend_status_resolves_selected_backend(self):
+        with patch.object(TexconvEncoder, "resolve_executable", return_value=self.temp_root / "texconv.exe"), \
+             patch.object(ToddsEncoder, "resolve_executable", side_effect=TextureOptError("未找到 todds.exe。")):
+            status = self.manager.get_backend_status({**self.options, "output_format": "dds", "encoder_backend": "texconv"})
+        self.assertTrue(status["available"])
+        self.assertEqual(status["backend"], "texconv")
+        self.assertEqual(status["resolved_path"], str(self.temp_root / "texconv.exe"))
+
+        # 所选档位缺失 → 明确不可用并指明档位，而不是静默回落 todds
+        with patch.object(TexconvEncoder, "resolve_executable", side_effect=TextureOptError("未找到 texconv.exe。")), \
+             patch.object(ToddsEncoder, "resolve_executable", return_value=self.temp_root / "todds.exe"):
+            status = self.manager.get_backend_status({**self.options, "output_format": "dds", "encoder_backend": "texconv"})
+        self.assertFalse(status["available"])
+        self.assertEqual(status["backend"], "texconv")
+
+    def test_get_encoder_status_plan_reflects_selected_backend(self):
+        texconv_info_patch = patch(
+            "backend.managers.mgr_texture_opt.texconv_info",
+            return_value={"gpu_directcompute": True, "version": "1.0"},
+        )
+        with patch.object(ToddsEncoder, "resolve_executable", return_value=self.temp_root / "todds.exe"), \
+             patch.object(TexconvEncoder, "resolve_executable", return_value=self.temp_root / "texconv.exe"), \
+             patch.object(NvttEncoder, "resolve_executable", return_value=self.temp_root / "nvtt_export.exe"), \
+             texconv_info_patch:
+            status = self.manager.get_encoder_status({**self.options, "output_format": "dds", "encoder_backend": "nvtt"})
+        plan = status["plan"]
+        self.assertEqual(plan["selected_backend"], "nvtt")
+        self.assertEqual(plan["effective_backend"], "nvtt")
+        self.assertEqual(plan["nvtt_shards"], 6)
+
+        # 所选档位缺失 → effective 回退 auto 落点（todds 可用即 todds）
+        with patch.object(NvttEncoder, "resolve_executable", side_effect=TextureOptError("未找到 nvtt_export.exe。")), \
+             patch.object(ToddsEncoder, "resolve_executable", return_value=self.temp_root / "todds.exe"), \
+             patch.object(TexconvEncoder, "resolve_executable", return_value=self.temp_root / "texconv.exe"), \
+             texconv_info_patch:
+            status = self.manager.get_encoder_status({**self.options, "output_format": "dds", "encoder_backend": "nvtt"})
+        plan = status["plan"]
+        self.assertEqual(plan["effective_backend"], plan["backend"])
+
+    def test_start_benchmark_requires_texconv(self):
+        with patch.object(TexconvEncoder, "resolve_executable", side_effect=TextureOptError("未找到 texconv.exe。")):
+            with self.assertRaises(TextureOptError) as ctx:
+                self.manager.start_benchmark([str(self.mod_root)], options=self.options)
+        self.assertIn("texconv", str(ctx.exception))
 
 
 if __name__ == "__main__":

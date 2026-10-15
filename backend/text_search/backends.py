@@ -19,6 +19,47 @@ from .effective_files import iter_root_candidate_files
 from .models import CandidateFile, SearchRequest, SearchResult, SearchRoot, matches_all_file_types
 
 
+def match_file_name_result(
+    *,
+    package_id: str,
+    mod_name: str,
+    store: str,
+    mod_path: str,
+    file_path: str,
+    pattern: re.Pattern[str],
+) -> SearchResult | None:
+    """文件名模式的统一判定：文件名或模组内相对路径命中其一即返回。
+
+    ``line_number=0``（文件名匹配无行号语义），``matched_line`` 回显命中的文件名或
+    模组内相对路径（POSIX 分隔符）——两个后端共用，保证同一查询两种实现结果一致。
+    """
+    name = Path(file_path).name
+    relative = name
+    if mod_path:
+        try:
+            rel = os.path.relpath(file_path, mod_path)
+        except ValueError:  # 跨盘符
+            rel = name
+        if not rel.startswith(".."):
+            relative = rel.replace("\\", "/")
+    if pattern.search(name):
+        matched = name
+    elif relative != name and pattern.search(relative):
+        matched = relative
+    else:
+        return None
+    return SearchResult(
+        package_id=package_id,
+        mod_name=mod_name,
+        store=store,
+        mod_path=mod_path,
+        file_path=file_path,
+        file_name=name,
+        line_number=0,
+        matched_line=matched,
+    )
+
+
 class SearchBackend(ABC):
     backend_name = "python"
     backend_label = "Python"
@@ -61,10 +102,28 @@ class PythonStreamingSearchBackend(SearchBackend):
             for candidate in iter_root_candidate_files(search_root, request, cancel_event=cancel_event):
                 if cancel_event.is_set():
                     break
+                if request.filenames_only:
+                    result = self._match_file_name(candidate, pattern)
+                    if result is not None:
+                        yield result
+                    continue
                 yield from self._search_single_file(candidate, pattern, cancel_event)
             processed += 1
             if on_file_complete:
                 on_file_complete(processed, total)
+
+    @staticmethod
+    def _match_file_name(candidate: CandidateFile, pattern: re.Pattern[str]) -> SearchResult | None:
+        """文件名模式：命中文件名或模组内相对路径之一即返回（line_number=0）。"""
+        result = match_file_name_result(
+            package_id=candidate.package_id,
+            mod_name=candidate.mod_name,
+            store=candidate.store,
+            mod_path=candidate.mod_path,
+            file_path=candidate.file_path,
+            pattern=pattern,
+        )
+        return result
 
     def _search_single_file(
         self,
@@ -193,6 +252,8 @@ class RipgrepSearchBackend(SearchBackend):
         )
         started_at = time.perf_counter()
         root_resolver = self._build_root_resolver(search_roots)
+        # 文件名模式没有 JSON 事件流，stdout 每行是一个路径，用同一 pattern 复核。
+        name_pattern = request.compile_pattern() if request.filenames_only else None
 
         try:
             assert process.stdout is not None
@@ -200,7 +261,10 @@ class RipgrepSearchBackend(SearchBackend):
                 if cancel_event.is_set():
                     self._terminate_process(process)
                     break
-                result = self._parse_match_event(raw_line, root_resolver)
+                if request.filenames_only:
+                    result = self._parse_file_path_line(raw_line, root_resolver, name_pattern)
+                else:
+                    result = self._parse_match_event(raw_line, root_resolver)
                 if result is not None:
                     yield result
         finally:
@@ -226,6 +290,8 @@ class RipgrepSearchBackend(SearchBackend):
             raise RuntimeError(stderr_text or tr("text_search.ripgrep.search_failed", "ripgrep 搜索执行失败"))
 
     def _build_command(self, executable: Path, request: SearchRequest, search_roots: list[SearchRoot]) -> list[str]:
+        if request.filenames_only:
+            return self._build_files_command(executable, request, search_roots)
         command = [
             str(executable),
             "--json",
@@ -248,6 +314,24 @@ class RipgrepSearchBackend(SearchBackend):
         for exclude_glob in self._build_common_exclude_globs(request):
             command.extend(["-g", f"!{exclude_glob}"])
         command.append(request.query)
+        command.extend(root.root_path for root in search_roots)
+        return command
+
+    def _build_files_command(self, executable: Path, request: SearchRequest, search_roots: list[SearchRoot]) -> list[str]:
+        """文件名模式：``rg --files`` 只列路径，是否命中交给 Python 侧同一 pattern 复核。
+
+        与内容检索命令的差异：``--json``/``--line-number``/``--text``/大小写与
+        字面量开关都作用于「内容」，对纯列目录无效；query 也不进命令行（rg 的
+        ``--files`` 没有 pattern 参数）。扩展名与目录排除的 glob 语义与内容检索一致。
+        """
+        command = [str(executable), "--files", "--no-messages"]
+        if not request.exclude_options.get("skip_hidden", True):
+            command.append("--hidden")
+        if not matches_all_file_types(request.file_types):
+            for file_type in request.file_types:
+                command.extend(["-g", f"*{file_type}"])
+        for exclude_glob in self._build_common_exclude_globs(request):
+            command.extend(["-g", f"!{exclude_glob}"])
         command.extend(root.root_path for root in search_roots)
         return command
 
@@ -317,6 +401,34 @@ class RipgrepSearchBackend(SearchBackend):
             file_name=Path(absolute_path).name,
             line_number=line_number,
             matched_line=matched_line,
+        )
+
+    def _parse_file_path_line(
+        self,
+        raw_line: str,
+        root_resolver: list[SearchRoot],
+        pattern: re.Pattern[str] | None,
+    ) -> SearchResult | None:
+        """文件名模式：stdout 的一行 = 一个路径，解析归属模组后按文件名判定。"""
+        if pattern is None:
+            return None
+        file_path = raw_line.rstrip("\r\n")
+        if not file_path:
+            return None
+        owner = self._resolve_owner_root(file_path, root_resolver)
+        if owner is None:
+            return None
+        try:
+            absolute_path = str(Path(file_path).resolve())
+        except OSError:
+            return None
+        return match_file_name_result(
+            package_id=owner.package_id,
+            mod_name=owner.mod_name,
+            store=owner.store,
+            mod_path=owner.mod_path,
+            file_path=absolute_path,
+            pattern=pattern,
         )
 
     @staticmethod

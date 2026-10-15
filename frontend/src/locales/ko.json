@@ -1001,10 +1001,12 @@
         "delete_orphan": "고아 {format} 삭제 작업이 대기열에 추가되었습니다.",
         "optimize": "텍스처 최적화 작업이 대기열에 추가되었습니다."
       },
-      "todds_found": "todds 실행 파일을 찾았습니다.",
       "tool_download_started": "도구 다운로드 작업이 시작되었습니다.",
       "tool_ready": "도구가 준비되었습니다",
-      "tool_unavailable": "텍스처 도구를 사용할 수 없습니다. 도구 설정, 다운로드 상태 또는 파일 권한을 확인하세요."
+      "tool_unavailable": "텍스처 도구를 사용할 수 없습니다. 도구 설정, 다운로드 상태 또는 파일 권한을 확인하세요.",
+      "convert_preview_done": "[UNTRANSLATED] 预演完成（未写盘）",
+      "tool_install_required": "[UNTRANSLATED] 该工具需从官网下载安装，安装后返回此处即可识别",
+      "encoder_found": "{name} 실행 파일을 찾았습니다"
     },
     "theme": {
       "delete_failed": "사용자 테마 삭제에 실패했습니다. 테마 파일이 사용 중이거나 삭제 권한이 없는지 확인하세요.",
@@ -1347,7 +1349,11 @@
       "load_result_history": "텍스처 결과 기록 로드",
       "start_analysis": "텍스처 분석 시작",
       "start_task": "최적화 작업 시작",
-      "tool_status": "텍스처 도구 확인"
+      "tool_status": "텍스처 도구 확인",
+      "encoder_status": "[UNTRANSLATED] 检查转换档位工具",
+      "benchmark_poll": "[UNTRANSLATED] 查询基准进度",
+      "benchmark_start": "[UNTRANSLATED] 启动采样基准",
+      "worker_overrides": "[UNTRANSLATED] 保存分片设置"
     },
     "update": {
       "check": "업데이트 확인",
@@ -2892,7 +2898,7 @@
       "no_matched_mod_exclusions": "일치하는 제외 모드가 없습니다.",
       "no_mod_exclusions": "모드 제외 없음",
       "no_progress": "작업 진행 없음",
-      "open_todds_log": "토즈 로그 열기",
+      "open_todds_log": "인코더 로그 열기",
       "output_format_desc": "DDS: RimWorld 1.6 이상에서는 기본적으로 읽을 수 있습니다. 이전 버전에서는 일반적으로 .dds 파일을 로드하려면 그래픽 설정+가 필요합니다.\nZSTD: 먼저 DDS를 생성한 다음 주로 디스크 공간을 절약하기 위해 .dds.zstd로 압축합니다. 게임에서 이를 읽으려면 Image Opt가 필요합니다.",
       "output_format_label": "출력 형식",
       "path_exclusion_placeholder": "전체 파일 경로를 한 줄에 하나씩 붙여넣으세요.",
@@ -2950,7 +2956,45 @@
         "png": "PNG 전용",
         "zstd": "ZSTD 전용"
       },
-      "vram_estimate": "예상 VRAM 사용량"
+      "vram_estimate": "예상 VRAM 사용량",
+      "download_texconv": "[UNTRANSLATED] 下载 texconv",
+      "encoder_available": "[UNTRANSLATED] 可用",
+      "encoder_backend": {
+        "nvtt": "[UNTRANSLATED] 中等",
+        "texconv": "[UNTRANSLATED] 快速",
+        "todds": "[UNTRANSLATED] 标准",
+        "auto": "[UNTRANSLATED] 自动（按本机推荐）"
+      },
+      "encoder_backend_desc": "[UNTRANSLATED] 自动：按本机探测结果选档（GPU 编码可用选快速档，否则回退标准档），探测详情见上方「转换档位工具」卡。\n标准：画质最好，转换耗时最长。适合贴图不多、或希望画质零妥协的情况。\n中等：画质接近标准档，日常游玩难以分辨；原尺寸转换时耗时居中，开启缩放时可能长于标准档。\n快速：转换最快，画质略低但日常游玩难以看出差别。适合贴图很多、想尽快完成转换的情况。",
+      "encoder_backend_label": "[UNTRANSLATED] 转换档位",
+      "encoder_backend_nvtt_desc": "[UNTRANSLATED] 画质接近标准档，日常游玩难以分辨；原尺寸转换时耗时居中，开启缩放时可能长于标准档。",
+      "encoder_backend_texconv_desc": "[UNTRANSLATED] 转换最快，画质略低但日常游玩难以看出差别。适合贴图很多、想尽快完成转换的情况。",
+      "encoder_backend_todds_desc": "[UNTRANSLATED] 画质最好，转换耗时最长。适合贴图不多、或希望画质零妥协的情况。",
+      "encoder_missing": "[UNTRANSLATED] 未在本机找到 {name} 程序。",
+      "encoder_missing_nvtt": "[UNTRANSLATED] 未检测到中等档所需的程序。可前往官方页面下载安装后返回此处。",
+      "encoder_open_site": "[UNTRANSLATED] 打开官网",
+      "encoder_status_title": "[UNTRANSLATED] 转换档位工具",
+      "encoder_unavailable": "[UNTRANSLATED] 不可用",
+      "encoder_backend_auto_desc": "[UNTRANSLATED] 按本机探测自动选档：快速档工具齐备且 GPU 编码可用时选快速档，否则回退标准档；机器能力探测结果展示在上方「转换档位工具」卡里。",
+      "plan_gpu_bad": "[UNTRANSLATED] GPU 编码不可用，透明通道贴图走 CPU",
+      "plan_gpu_ok": "[UNTRANSLATED] GPU 编码可用（DirectCompute 实测通过）",
+      "plan_gpu_unknown": "[UNTRANSLATED] GPU 探测未完成（未安装快速档时属预期）",
+      "plan_title": "[UNTRANSLATED] 本机方案",
+      "plan_workers": "[UNTRANSLATED] GPU 分片 {gpu} + CPU 分片 {cpu}",
+      "plan_workers_todds": "[UNTRANSLATED] todds 使用内置多线程，无分片设置",
+      "benchmark_running": "[UNTRANSLATED] 基准实测中…",
+      "benchmark_start": "[UNTRANSLATED] 采样实测（用已启用模组贴图测最优分片）",
+      "plan_effective": "적용: {workers} ({tier})",
+      "plan_source_benchmark": "[UNTRANSLATED] 采样实测",
+      "plan_source_default": "[UNTRANSLATED] 默认推荐",
+      "plan_source_manual": "[UNTRANSLATED] 手动设置",
+      "workers_auto": "[UNTRANSLATED] 自动（跟随推荐）",
+      "workers_cpu_label": "[UNTRANSLATED] CPU 分片",
+      "workers_gpu_label": "[UNTRANSLATED] GPU 分片",
+      "workers_hint": "[UNTRANSLATED] 0/自动 = 跟随推荐；手动值对所有转换任务生效并持久保存。采样实测会真实编码一小批启用模组的贴图（只读源文件，输出写临时目录），约需几十秒。",
+      "workers_save": "[UNTRANSLATED] 保存",
+      "plan_workers_nvtt": "인코딩 샤드 {n}개 (최대 6)",
+      "benchmark_needs_texconv": "샘플 벤치마크에는 빠른 등급(texconv)이 필요합니다. 먼저 위에서 다운로드하세요."
     },
     "translation_manager": {
       "auto_translate_batch": "번역 누락({count})",
@@ -3257,13 +3301,19 @@
       "no_analysis_targets": "분석을 위해 선택된 모드가 없습니다.",
       "no_residue_targets": "{format}를 포함하는 제거된 잔여 모드 폴더가 없습니다.",
       "no_valid_mod_paths": "선택한 모드에 대해 유효한 물리적 경로를 찾을 수 없습니다.",
-      "prepare_tool_failed": "텍스처 도구 준비에 실패했습니다. 네트워크 연결, 프록시 설정, 도구 폴더 권한과 디스크 공간을 확인하세요.",
       "start_analysis_failed": "텍스처 분석을 시작하지 못했습니다. 모드 경로, 파일 권한, 백엔드 로그를 확인한 뒤 다시 시도하세요.",
       "start_clean_failed": "텍스처 정리를 시작하지 못했습니다. 모드 경로, 파일 권한, 백엔드 로그를 확인한 뒤 다시 시도하세요.",
       "start_optimize_failed": "텍스처 생성을 시작하지 못했습니다. 도구 설정, 모드 경로, 파일 권한, 백엔드 로그를 확인한 뒤 다시 시도하세요.",
       "status_failed": "텍스처 도구 상태를 읽지 못했습니다. 도구 경로와 실행 환경을 확인하세요.",
       "task_start_failed": "텍스처 작업을 시작하지 못했습니다. 선택한 Mod 경로, 도구 상태, 디스크 공간과 파일 권한을 확인하세요.",
-      "tool_download_failed": "텍스처 도구 다운로드를 시작하지 못했습니다. 네트워크 연결, 프록시 설정과 도구 폴더 쓰기 권한을 확인하세요."
+      "tool_download_failed": "텍스처 도구 다운로드를 시작하지 못했습니다. 네트워크 연결, 프록시 설정과 도구 폴더 쓰기 권한을 확인하세요.",
+      "encoder_status_failed": "[UNTRANSLATED] 读取贴图编码器状态失败。请检查工具目录权限后重试。",
+      "no_convert_paths": "[UNTRANSLATED] mod_paths 不能为空",
+      "tasks_read_failed": "[UNTRANSLATED] 读取贴图任务状态失败。请稍后重试。",
+      "benchmark_no_targets": "[UNTRANSLATED] 当前没有已启用的模组，无法采样",
+      "benchmark_query_failed": "[UNTRANSLATED] 查询贴图基准任务失败。",
+      "benchmark_start_failed": "[UNTRANSLATED] 启动贴图基准实测失败。请确认已启用模组且 texconv 可用。",
+      "worker_overrides_failed": "[UNTRANSLATED] 保存分片数设置失败。请检查配置文件写入权限。"
     },
     "update": {
       "action_failed": "업데이트 작업 실행에 실패했습니다. 네트워크 연결, 디스크 공간과 설치 폴더 권한을 확인하세요.",
@@ -4481,7 +4531,7 @@
       "clean_start": "{target_label} 정리 시작",
       "completed_elapsed": "{message}, 경과된 {elapsed}",
       "encode_batch": "{output_label} 생성: 배치 {batch_index}/{batch_total} ({scale_label})",
-      "encode_batch_wait": "todds가 일괄 {batch_index}/{batch_total}({scale_label}) 쓰기를 완료할 때까지 기다리는 중입니다.",
+      "encode_batch_wait": "인코더가 일괄 {batch_index}/{batch_total}({scale_label}) 쓰기를 마치기 기다리는 중",
       "encode_completed": "{output_label} 생성 완료{details}",
       "encode_record_batch": "생성된 파일 기록: 일괄 {batch_index}/{batch_total}({scale_label})",
       "encode_start": "{output_label} 생성 시작",
@@ -4502,7 +4552,16 @@
       "tool_download_start": "todds 도구 패키지 다운로드 시작",
       "tool_install_start": "todds 도구 패키지를 받았습니다. 압축을 푸는 중...",
       "update_encode_state": "생성 상태 업데이트 중",
-      "write_result": "작업 결과 쓰기"
+      "write_result": "작업 결과 쓰기",
+      "texconv_download_start": "[UNTRANSLATED] 开始下载 texconv 编码器",
+      "texconv_install_start": "[UNTRANSLATED] texconv 编码器获取成功，正在落位...",
+      "benchmark_cancelled": "[UNTRANSLATED] 贴图基准任务已取消",
+      "benchmark_done": "벤치마크 완료: 권장 GPU 샤드 {gpu} + CPU 샤드 {cpu} (0 = 사용 안 함)",
+      "benchmark_failed": "[UNTRANSLATED] 贴图基准任务失败：{error}",
+      "benchmark_no_samples": "[UNTRANSLATED] 启用模组里没有可用于采样的贴图（缺少 256px 以上的 PNG）。",
+      "benchmark_round": "[UNTRANSLATED] 基准实测 {index}/{total}：{scope} 分片 = {value}",
+      "benchmark_scan": "[UNTRANSLATED] 正在随机抽取模组并扫描贴图样本...",
+      "benchmark_requires_texconv": "샘플 벤치마크에는 빠른 등급(texconv)이 필요합니다. 먼저 인코더 카드에서 다운로드하세요: {detail}"
     },
     "title": {
       "file_delete": "파일 삭제",
@@ -4895,8 +4954,15 @@
     "texture": {
       "tool_download_done": "텍스처 도구 다운로드 완료: {path}",
       "tool_download_failed": "텍스처 도구 다운로드 실패",
-      "tool_download_started_watch_status": "토즈 다운로드가 시작되었습니다. 상태 표시줄을 살펴보세요.",
-      "tool_ready_no_download": "토즈가 준비되었습니다. 다운로드가 필요하지 않습니다"
+      "texconv_download_done": "[UNTRANSLATED] texconv 下载完成: {path}",
+      "texconv_download_failed": "[UNTRANSLATED] texconv 下载失败",
+      "encoder_download_started": "[UNTRANSLATED] 已启动 {name} 下载任务，请留意底部状态栏。",
+      "encoder_ready": "[UNTRANSLATED] {name} 已就绪",
+      "encoder_site_opened": "[UNTRANSLATED] 已打开官方页面，安装完成后返回此处即可识别。",
+      "benchmark_done": "[UNTRANSLATED] 采样基准完成",
+      "benchmark_failed": "[UNTRANSLATED] 采样基准未完成",
+      "benchmark_starting": "[UNTRANSLATED] 正在启动采样基准…",
+      "worker_overrides_saved": "[UNTRANSLATED] 分片设置已保存"
     },
     "texture_opt": {
       "image_opt_not_enabled": "활성 모드 목록에서 이미지 옵션이 감지되지 않았습니다. ZSTD 텍스처는 계속 생성되지만 게임에서 이를 읽지 못할 수도 있습니다.",
@@ -6242,7 +6308,9 @@
         "workshop_db_path": "Workshop 데이터베이스 경로",
         "workshop_db_path_desc": "Workshop 정보 데이터베이스용 로컬 캐시 파일입니다.",
         "workshop_db_url": "Workshop 데이터베이스 URL",
-        "workshop_db_url_desc": "Mod 이름, 작성자 및 설명을 보완하는 데 사용되는 Workshop 정보 데이터베이스입니다. 출처: 커뮤니티 캐시 파일."
+        "workshop_db_url_desc": "Mod 이름, 작성자 및 설명을 보완하는 데 사용되는 Workshop 정보 데이터베이스입니다. 출처: 커뮤니티 캐시 파일.",
+        "encoders_desc": "[UNTRANSLATED] 贴图转换可选三种档位，其中中等档需要先安装 NVIDIA 提供的工具。",
+        "encoders_title": "텍스처 인코더 등급"
       },
       "features": {
         "action_prechecks": "주요 조치 전 필수 확인 사항",

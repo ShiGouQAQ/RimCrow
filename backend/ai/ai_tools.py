@@ -1,7 +1,7 @@
 """AI 工具定义与执行模块。
 
 这里同时维护三类内容：
-1. 工具入参契约，供 schema 生成与运行时校验复用
+1. 工具入参字段约定，供 schema 生成与运行时校验复用
 2. 工具静态元数据，供模型理解和前端展示复用
 3. 工具执行器，把具体业务查询封装成统一结果协议
 """
@@ -441,7 +441,19 @@ class AIToolExecutor:
                 name,
                 extra={"error_code": "AI.TOOL.ARGS_INVALID", "extra_context": {"tool": name}},
             )
-            payload = {"error": "工具参数不符合要求，请重新组织输入后重试。"}
+            # 只取参数路径 + 校验消息（loc/msg 是校验器自身的字段，不含用户数据，
+            # 不回传 err["input"] 以免把原始入参带进模型上下文），上限 5 条避免返回过长。
+            errors = e.errors()
+            details = "; ".join(
+                "{}: {}".format(
+                    ".".join(str(part) for part in err.get("loc", ())) or "(root)",
+                    err.get("msg", ""),
+                )
+                for err in errors[:5]
+            )
+            if len(errors) > 5:
+                details += f"；等共 {len(errors)} 项"
+            payload = {"error": f"工具参数不符合要求（{details}），请修正对应参数后重试。"}
             return self._build_execution_result(name=name, payload=payload)
 
         try:
@@ -668,7 +680,7 @@ class AIToolExecutor:
             if target_line in raw_lines:
                 target_block = block
                 break
-        # 兜底：如果没精确匹配到行号，但这个文件确实返回了块（可能是日志滚动导致行号偏移）
+        # 备选：如果没精确匹配到行号，但这个文件确实返回了块（可能是日志滚动导致行号偏移）
         if target_block is None and matched_blocks:
             target_block = matched_blocks[0]
         if target_block is None:

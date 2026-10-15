@@ -193,5 +193,84 @@ class TestLoadOrderManagerSave(unittest.TestCase):
             self.assertEqual(captured_entries[0]["package_token"], "author.workshop_steam")
 
 
+class TestVersionTokenCompatBehavior(unittest.TestCase):
+    """``save_load_order`` 的 version_token 兼容期行为。
+
+    锁两条 desc 承诺（`mcp_tool_specs.save_load_order`）：
+    1. ``base_version_token`` **可选**（schema default=None）——不传/传空 = 跳过
+       磁盘冲突保护，保存照常执行（兼容分支，必须一直有效）；
+    2. 传了 token 则**必须真的拦住外部改动**——否则「建议必传」是空话。
+    本组用例专门覆盖 token 分支（其余 7 个用例均不触 token）。
+    """
+
+    def _create_context(self, temp_dir: str) -> ProfileContext:
+        game_dir = Path(temp_dir) / "game"
+        user_dir = Path(temp_dir) / "user"
+        game_dir.mkdir(parents=True, exist_ok=True)
+        user_dir.mkdir(parents=True, exist_ok=True)
+        context = ProfileContext(
+            profile_id="test-profile",
+            game_version="1.5.4069",
+            game_install_path=str(game_dir),
+            user_data_path=str(user_dir),
+            prefer_steam_launch=False,
+            use_workshop_mods=True,
+            use_self_mods=False,
+        )
+        context.ensure_directories()
+        return context
+
+    def _write_modsconfig(self, manager: LoadOrderManager, mod_ids: list[str]) -> None:
+        items = "\n".join(f"    <li>{mid}</li>" for mid in mod_ids)
+        Path(manager.context.mods_config_file).write_text(
+            f"""<?xml version="1.0" encoding="utf-8"?>
+<ModsConfigData>
+  <version>1.5.4069</version>
+  <activeMods>
+{items}
+  </activeMods>
+</ModsConfigData>""",
+            encoding="utf-8",
+        )
+
+    def test_missing_or_empty_token_skips_conflict_protection(self):
+        """兼容分支：不传 token → is_version_token_stale 恒 False（保存不受阻）。"""
+        with tempfile.TemporaryDirectory() as temp_dir:
+            context = self._create_context(temp_dir)
+            manager = LoadOrderManager(context)
+            self._write_modsconfig(manager, ["ludeon.rimworld", "brrainz.harmony"])
+
+            for omitted in (None, {}):
+                is_stale, current = manager.is_version_token_stale(omitted)
+                self.assertFalse(is_stale, f"token={omitted!r} 应跳过冲突保护")
+                # current 是 token 本体（_build_version_token 的产物），不是读取结果的返回包装
+                self.assertTrue(
+                    isinstance(current, dict)
+                    and {"path", "mtime_ms", "size", "active_hash"} <= set(current),
+                    f"当前 token 形状不符: {current!r}",
+                )
+
+    def test_current_token_accepted_and_external_change_invalidates_it(self):
+        """传 token 且磁盘未变 → 放行；外部改动后同一 token → 判陈旧（保护真实生效）。"""
+        with tempfile.TemporaryDirectory() as temp_dir:
+            context = self._create_context(temp_dir)
+            manager = LoadOrderManager(context)
+            self._write_modsconfig(manager, ["ludeon.rimworld"])
+
+            token = manager.get_current_version_token()
+            self.assertTrue(token, "合法 ModsConfig 应产出 version_token")
+            is_stale, current = manager.is_version_token_stale(token)
+            self.assertFalse(is_stale, "磁盘未变时当前 token 不该被判陈旧")
+            self.assertEqual(current, token)
+
+            # 外部改动：换一组模组 → size/active_hash/mtime 三者至少其一必变
+            self._write_modsconfig(manager, ["ludeon.rimworld", "brrainz.harmony", "other.mod"])
+            is_stale_after, current_after = manager.is_version_token_stale(token)
+            self.assertTrue(is_stale_after, "外部改动后旧 token 必须判陈旧（否则保护失效）")
+            self.assertNotEqual(current_after, token)
+            # 拿新 token 再存 → 放行（token 续链可用）
+            self.assertFalse(manager.is_version_token_stale(current_after)[0])
+
+
 if __name__ == "__main__":
     unittest.main()
