@@ -129,6 +129,24 @@ Sensitive fields such as AI API keys, Steam Web API keys, and proxy credentials 
 
 Features that use AI providers, Steam, GitHub, Lanzou Cloud, community rules, or external databases may send requests to those third-party services. Local list management, sorting, and backup workflows can still be used without network-dependent features.
 
+## MCP Server (This Fork)
+
+The `feat/edgelord` branch of this fork exposes RimCrow to external AI tools over the **Model Context Protocol**: 66 tools covering scanning, load order, groups, backups, Workshop/Git acquisition, texture optimization, and log troubleshooting.
+
+- Architecture: MCP client ↔ `rimcrow-mcp.exe` (Rust stdio ↔ Streamable HTTP bridge) ↔ embedded endpoint inside the GUI (loopback only + bearer token; endpoint file at `%LOCALAPPDATA%\RimCrow\mcp-endpoint.json`).
+- Guards: optimistic version tokens on load-order writes, dry-run and atomic rejection for batch operations, `isError` + `nextActions` error contract, argument pre-validation.
+- Build: `uv run python pack_pyinstaller.py` (steps: frontend → bridge → app → docs → tree → zip). Smoke test: `uv run python scripts/smoke_bridge.py`.
+- Bridge env overrides: `RIMCROW_MCP_ENDPOINT`, `RIMCROW_MCP_LOG`, `RIMCROW_SPAWN_CMD`, `RIMCROW_MCP_SPAWN_NO_WINDOW`.
+
+## Acknowledgements
+
+- [Inky-Feather/RimCrow](https://github.com/Inky-Feather/RimCrow) — the upstream project. All core capabilities (mod management, Workshop, backups, troubleshooting, texture optimization, AI assist) come from the upstream author and contributors; this fork only adds the MCP integration layer on top.
+- [fastmcp](https://github.com/jlowin/fastmcp) — Python MCP server framework behind the embedded endpoint.
+- [rmcp (official MCP Rust SDK)](https://github.com/modelcontextprotocol/rust-sdk) — protocol implementation of the `rimcrow-mcp.exe` bridge.
+- [tokio](https://github.com/tokio-rs/tokio) — async runtime of the bridge.
+- [Model Context Protocol](https://modelcontextprotocol.io) — the open standard connecting AI tools to applications.
+- And the open-source foundations of the upstream stack: Python, Vue 3, Vite, pywebview, PyInstaller, uv, pytest.
+
 ## License
 
 MIT

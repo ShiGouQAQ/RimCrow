@@ -18,6 +18,7 @@ RimCrow（原名 RimModManager）是一个面向 **RimWorld** 的桌面模组管
 - 排错和 AI：看 [日志排错与 AI 诊断说明](./doc/08-日志排错与AI诊断说明.md)，适合处理红字、坏档、启动失败和日志分析。
 - 贴图优化：看 [贴图优化说明](./doc/07-贴图优化说明.md)。
 - 开发和翻译：看 [开发与本地运行](#开发与本地运行)、[Steamworks 运行库](#steamworks-运行库)、[多语言与翻译贡献](#多语言与翻译贡献)。
+- MCP 服务（本分支）：看 [MCP 服务能力](#mcp-服务能力本分支新增)；项目致谢见 [鸣谢](#鸣谢)。
 
 ## 兼容状态
 
@@ -124,6 +125,7 @@ RimCrow（原名 RimModManager）是一个面向 **RimWorld** 的桌面模组管
 - `main` 分支跟随发布打包和存档节点，适合查看相对稳定的发布状态，但不代表最新开发进度。
 - `dev` 分支是当前最新开发分支。准备提交代码、文档或跟进最新功能时，建议基于 `dev` 分支开始。
 - 普通用户优先使用发布版下载渠道，不建议直接从开发分支运行未打包代码。
+- 本 fork 的 `feat/edgelord` 分支在上游 `dev`（当前基线 v0.24.12）之上为 RimCrow 增加了 **MCP 服务能力**：把管理器功能以 66 个 MCP 工具暴露给外部 AI 客户端，详见 [MCP 服务能力](#mcp-服务能力本分支新增)。
 
 ### 技术栈
 
@@ -217,6 +219,40 @@ uv run python main.py --browser
 ```powershell
 uv run python main.py --reset-window-state
 ```
+
+## MCP 服务能力（本分支新增）
+
+本分支把 RimCrow 的管理器能力通过 **Model Context Protocol（MCP）** 暴露给外部 AI 工具（Claude Code、OpenCode、ZCode 等任意 MCP 客户端）。整体链路：
+
+```
+MCP 客户端
+   ↕ stdio
+rimcrow-mcp.exe（Rust 桥：stdio ↔ Streamable HTTP；读 mcp-endpoint.json 自动发现端口与令牌）
+   ↕ HTTP（仅回环地址 + Bearer Token）
+RimCrow GUI 内嵌端点（backend/mcp_endpoint.py，随主程序启动）
+   ↕ 进程内调用
+RimCrow 后端（扫描、加载顺序、工坊与下载、Git 来源、贴图优化、日志排错）
+```
+
+### 工具面（66 个）
+
+- 管理：扫描、模组列表与详情、加载顺序读写、自动排序、分组管理、备份、环境切换
+- 排障：游戏状态与两阶段启动、日志读取与全文检索、事件等待
+- 获取：工坊订阅与下载、Steam Web API 订阅、Git 仓库订阅与发布物部署、本地模组包导入、更新检查
+- 贴图：编码器管理与 DDS/ZSTD 批量转换（dry_run 预演 → 提交 → 轮询/取消）
+
+### 安全与一致性护栏
+
+- 端点只绑定回环地址，访问需要 Bearer Token；端点文件位于 `%LOCALAPPDATA%\RimCrow\mcp-endpoint.json`，随启动刷新。
+- 加载顺序写入带版本令牌乐观锁与冲突检测；批量操作支持 dry_run 预演与原子拒绝。
+- 错误统一返回 isError、因果说明与 nextActions；未知参数经预校验直接报错，不会静默忽略。
+- 工具清单以 GUI 运行时清单为准，桥内嵌快照（tools-cache.json）只作降级兜底。
+
+### 构建与验证
+
+- 打包流水线 `pack_pyinstaller.py`（步骤化配置：frontend → bridge → app → docs → tree → zip）。bridge 步骤先由 `scripts/gen_tool_cache.py` 从 `backend/mcp_tool_specs.py` 生成工具快照，再 `cargo build` 桥并随主程序一同进入 dist。
+- 冒烟验证：`uv run python scripts/smoke_bridge.py`，覆盖 stdio 连接、令牌失败、spawn 拉起、未知工具错误语义与 live 端点全链路。
+- 桥侧环境变量：`RIMCROW_MCP_ENDPOINT`（端点文件路径覆盖）、`RIMCROW_MCP_LOG`（桥日志级别）、`RIMCROW_SPAWN_CMD`（拉起 GUI 的命令覆盖）、`RIMCROW_MCP_SPAWN_NO_WINDOW`（无窗口拉起，排障用）。
 
 ## Steamworks 运行库
 
@@ -541,6 +577,15 @@ main.py     应用入口
 - [ ] 二分法排错自动化，辅助定位导致坏档或报错的模组组合
 
 </details>
+
+## 鸣谢
+
+- [Inky-Feather/RimCrow](https://github.com/Inky-Feather/RimCrow) —— 本项目上游。模组管理、工坊、备份、排错、贴图优化、AI 辅助等全部核心能力来自上游作者与贡献者的工作，本分支只在其上追加了 MCP 接入层。
+- [fastmcp](https://github.com/jlowin/fastmcp) —— GUI 内嵌端点使用的 Python MCP 服务框架。
+- [rmcp · MCP 官方 Rust SDK](https://github.com/modelcontextprotocol/rust-sdk) —— rimcrow-mcp.exe 桥的协议实现。
+- [tokio](https://github.com/tokio-rs/tokio) —— 桥的异步运行时。
+- [Model Context Protocol](https://modelcontextprotocol.io) —— 让 AI 工具以统一协议接入应用的开放标准。
+- 以及上游技术栈所依托的开源项目：Python、Vue 3、Vite、pywebview、PyInstaller、uv、pytest。
 
 ## License
 
