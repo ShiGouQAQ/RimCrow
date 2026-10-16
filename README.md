@@ -18,7 +18,7 @@ RimCrow（原名 RimModManager）是一个面向 **RimWorld** 的桌面模组管
 - 排错和 AI：看 [日志排错与 AI 诊断说明](./doc/08-日志排错与AI诊断说明.md)，适合处理红字、坏档、启动失败和日志分析。
 - 贴图优化：看 [贴图优化说明](./doc/07-贴图优化说明.md)。
 - 开发和翻译：看 [开发与本地运行](#开发与本地运行)、[Steamworks 运行库](#steamworks-运行库)、[多语言与翻译贡献](#多语言与翻译贡献)。
-- MCP 服务（本分支）：看 [MCP 服务能力](#mcp-服务能力本分支新增)；项目致谢见 [鸣谢](#鸣谢)。
+- 本分支增量功能（MCP 服务、贴图转换档位、检索增强）：看 [本分支增量功能](#本分支增量功能feat-edgelord)；项目致谢见 [鸣谢](#鸣谢)。
 
 ## 兼容状态
 
@@ -42,7 +42,7 @@ RimCrow（原名 RimModManager）是一个面向 **RimWorld** 的桌面模组管
 - 游戏日志查看、错误聚类、文件内容搜索和 AI 日志诊断辅助；详细说明见 [日志排错与 AI 诊断说明](./doc/08-日志排错与AI诊断说明.md)。
 - AI 批量生成模组别名，支持长文本动态裁切、Token 分块、并发限流和实时进度反馈。
 - 多语言界面、翻译模式、用户覆盖语言包和外部翻译工作文件导入导出。
-
+- 本分支（feat/edgelord）在以上能力之外追加 MCP 服务、贴图转换多档位与检索增强，见 [本分支增量功能](#本分支增量功能feat-edgelord)。
 
 ## 发布版下载与升级
 
@@ -50,9 +50,13 @@ RimCrow（原名 RimModManager）是一个面向 **RimWorld** 的桌面模组管
 
 ### 下载渠道
 
-- 蓝奏云：https://wwbns.lanzouu.com/b00mq4tqgf
-  提取密码：`aite`
-- GitHub Releases：https://github.com/Inky-Feather/RimCrow/releases
+- 本分支（feat/edgelord，含 MCP 服务与贴图转换档位）：https://github.com/ShiGouQAQ/RimCrow/releases
+- 上游原版：
+  - 蓝奏云：https://wwbns.lanzouu.com/b00mq4tqgf
+    提取密码：`aite`
+  - GitHub Releases：https://github.com/Inky-Feather/RimCrow/releases
+
+本分支发布包为精简形态：只含 `RimCrow.exe`、`rimcrow-mcp.exe` 与配套模组。外部工具（ripgrep / SteamCMD / todds）与社区数据缓存（规则库、steamDB 等）不随包附带，首次使用对应功能时由程序内置的「外部工具检查」和数据源更新自动下载，需要联网。
 
 ### 全新安装
 
@@ -125,7 +129,7 @@ RimCrow（原名 RimModManager）是一个面向 **RimWorld** 的桌面模组管
 - `main` 分支跟随发布打包和存档节点，适合查看相对稳定的发布状态，但不代表最新开发进度。
 - `dev` 分支是当前最新开发分支。准备提交代码、文档或跟进最新功能时，建议基于 `dev` 分支开始。
 - 普通用户优先使用发布版下载渠道，不建议直接从开发分支运行未打包代码。
-- 本 fork 的 `feat/edgelord` 分支在上游 `dev`（当前基线 v0.24.12）之上为 RimCrow 增加了 **MCP 服务能力**：把管理器功能以 66 个 MCP 工具暴露给外部 AI 客户端，详见 [MCP 服务能力](#mcp-服务能力本分支新增)。
+- 本 fork 的 `feat/edgelord` 分支在上游 `dev`（当前基线 v0.24.12）之上追加：**MCP 服务能力**（把管理器功能以 MCP 工具暴露给外部 AI 客户端）、**贴图转换多档位**（todds / NVTT / texconv 与自动选档）、**检索增强**与若干稳定性修正，详见 [本分支增量功能](#本分支增量功能feat-edgelord)。
 
 ### 技术栈
 
@@ -220,9 +224,13 @@ uv run python main.py --browser
 uv run python main.py --reset-window-state
 ```
 
-## MCP 服务能力（本分支新增）
+## 本分支增量功能（feat-edgelord）
 
-本分支把 RimCrow 的管理器能力通过 **Model Context Protocol（MCP）** 暴露给外部 AI 工具（Claude Code、OpenCode、ZCode 等任意 MCP 客户端）。整体链路：
+本分支在上游 `dev`（当前基线 v0.24.12）之上追加以下能力，全部随发布版提供。
+
+### MCP 服务能力
+
+把 RimCrow 的管理器能力通过 **Model Context Protocol（MCP）** 暴露给外部 AI 工具（Claude Code、OpenCode、ZCode、Claude Desktop、Cursor 等任意 MCP 客户端）。整体链路：
 
 ```
 MCP 客户端
@@ -234,17 +242,19 @@ RimCrow GUI 内嵌端点（backend/mcp_endpoint.py，随主程序启动）
 RimCrow 后端（扫描、加载顺序、工坊与下载、Git 来源、贴图优化、日志排错）
 ```
 
-### 工具面（66 个）
+工具面按功能域划分：
 
 - 管理：扫描、模组列表与详情、加载顺序读写、自动排序、分组管理、备份、环境切换
 - 排障：游戏状态与两阶段启动、日志读取与全文检索、事件等待
 - 获取：工坊订阅与下载、Steam Web API 订阅、Git 仓库订阅与发布物部署、本地模组包导入、更新检查
 - 贴图：编码器管理与 DDS/ZSTD 批量转换（dry_run 预演 → 提交 → 轮询/取消）
 
-### 安装与使用
+工具清单在 `backend/mcp_tool_specs.py` 单源维护，随版本演进增删，文档不固定具体数量；客户端一律以 `tools/list` 的实时返回为准，桥内嵌快照仅作 GUI 未启动时的降级兜底。
 
-1. **获取本分支构建**：从本仓库 Releases 下载 `RimCrow-v0.24.12-windows.zip`（GUI 与 `rimcrow-mcp.exe` 同批构建、版本对齐；如尚未发布，可按下节自行构建）。
-2. **接入 MCP 客户端**（Claude Desktop / Cursor 等 `mcpServers` 风格）：
+#### 安装与使用
+
+1. **安装 GUI**：从[本仓库 Releases](https://github.com/ShiGouQAQ/RimCrow/releases) 下载发布包，解压到固定目录，启动 `RimCrow.exe` 完成路径配置与首次扫描。GUI 与 `rimcrow-mcp.exe` 同批构建、版本对齐，桥无需单独安装。
+2. **接入 MCP 客户端**（Claude Desktop、Cursor 等 `mcpServers` 风格通用写法）：
 
 ```json
 {
@@ -256,10 +266,26 @@ RimCrow 后端（扫描、加载顺序、工坊与下载、Git 来源、贴图�
 }
 ```
 
-3. **用起来**：RimCrow GUI 开着即可被连接（桥每次调用实时探活，GUI 重启无需重启客户端）；GUI 未开时给桥加 `--spawn` 参数可自动拉起。OpenCode / ZCode 用户把同一条命令填进各自客户端的本地 stdio server 配置即可。
-4. **AI 能替你做的事**：读取与修改加载顺序、扫描并解释模组冲突、检索日志定位报错、一键补订缺失依赖、批量贴图转 DDS/ZSTD——所有写操作自带乐观锁与 dry_run 预演护栏。
+- Claude Code（项目级）：在项目根 `.mcp.json` 用同一 `command` 写法登记桥。
+- OpenCode（项目级）：在项目根 `opencode.json` 的 `mcp.servers.rimcrow` 填同一命令。
+- 桥不需要任何 API Key：鉴权由 GUI 内嵌端点的「仅回环 + Bearer Token」自动完成，端点文件位于 `%LOCALAPPDATA%\RimCrow\mcp-endpoint.json`，随 GUI 启动刷新。
 
-桥的完整参数、环境变量与 endpoint 契约见 [ShiGouQAQ/rimcrow-mcp](https://github.com/ShiGouQAQ/rimcrow-mcp)。
+3. **验证连通**：保持 GUI 开启，在客户端里调用任意工具（如查询加载顺序）即完成验证；也可先确认桥本身可执行：
+
+```powershell
+.\rimcrow-mcp.exe -V
+```
+
+4. **日常使用**：GUI 开着即可被连接——桥每次调用实时探活，GUI 重启不需要重启客户端；GUI 未开时给桥命令追加 `--spawn` 可自动拉起 GUI（冷启动需等待就绪）。AI 可代劳的典型场景：读取与修改加载顺序、扫描并解释模组冲突、检索日志定位报错、补订缺失依赖、批量贴图转 DDS/ZSTD。
+
+#### MCP 故障排查
+
+| 现象 | 处理 |
+| --- | --- |
+| 调用返回「RimCrow 未运行」类因果错误 | 启动 GUI 后重试；或给桥加 `--spawn` 自动拉起 |
+| 客户端连不上桥 | 确认 `command` 为绝对路径且指向解压目录内的 `rimcrow-mcp.exe`；用 `rimcrow-mcp.exe -V` 确认可执行 |
+| 工具清单比预期少 | 内嵌快照只是降级兜底；启动 GUI 后以运行时清单为准，升级后重启一次 GUI |
+| 桥行为异常需排障 | 设置 `RIMCROW_MCP_LOG=debug` 后重启客户端复现；完整参数与 endpoint 契约见 [ShiGouQAQ/rimcrow-mcp](https://github.com/ShiGouQAQ/rimcrow-mcp) |
 
 ### 安全与一致性护栏
 
@@ -268,11 +294,31 @@ RimCrow 后端（扫描、加载顺序、工坊与下载、Git 来源、贴图�
 - 错误统一返回 isError、因果说明与 nextActions；未知参数经预校验直接报错，不会静默忽略。
 - 工具清单以 GUI 运行时清单为准，桥内嵌快照（tools-cache.json）只作降级兜底。
 
-### 构建与验证
+### 贴图转换多档位
 
-- 打包流水线 `pack_pyinstaller.py`（步骤化配置：frontend → bridge → app → docs → tree → zip）。bridge 步骤先由 `scripts/gen_tool_cache.py` 从 `backend/mcp_tool_specs.py` 生成工具快照，再 `cargo build` 桥并随主程序一同进入 dist。
-- 冒烟验证：`uv run python scripts/smoke_bridge.py`，覆盖 stdio 连接、令牌失败、spawn 拉起、未知工具错误语义与 live 端点全链路。
-- 桥侧环境变量：`RIMCROW_MCP_ENDPOINT`（端点文件路径覆盖）、`RIMCROW_MCP_LOG`（桥日志级别）、`RIMCROW_SPAWN_CMD`（拉起 GUI 的命令覆盖）、`RIMCROW_MCP_SPAWN_NO_WINDOW`（无窗口拉起，排障用）。
+上游贴图优化只走 todds 单一通路；本分支扩展为三档编码器与自动选档：
+
+| 档位 | 编码器 | 特点 |
+| --- | --- | --- |
+| 标准 | todds | 画质最好，转换耗时最长 |
+| 中等 | NVTT | 画质接近标准档，需本机安装 NVIDIA 提供的工具 |
+| 快速 | texconv | 转换最快，画质略低但日常游玩难以分辨 |
+| 自动 | — | 按本机探测选档：快速档工具齐备且 GPU DirectCompute 编码可用时选快速，否则回退标准 |
+
+配套能力：
+
+- GUI 编码器状态卡：检测本机编码器可用性、从官方页面下载 texconv、展示 GPU 编码探测结果（透明通道贴图自动走 CPU）。
+- 采样基准：用已启用模组的真实贴图实测最优 GPU / CPU 分片（源文件只读，输出写临时目录），结果可直接应用。
+- 分片手动覆盖：GPU / CPU 分片数手动设置并持久化，对所有转换任务生效。
+- MCP 贴图通路：编码器状态查询 / 下载、转换预演（dry_run）→ 提交 → 轮询 / 取消的完整闭环。
+
+设置入口：贴图优化弹窗「转换档位」区域与设置页「贴图转换档位」；配置键 `encoder_backend`（默认 `todds`，与上游行为一致）。
+
+### 检索与稳定性增量
+
+- 模组文本检索支持 `filenames_only`（按文件名 / 相对路径定位资源文件）与 `file_types` 类型过滤。
+- 单实例互斥：重复启动自动静默退出，避免多实例并发写坏程序目录内的 SQLite 数据库。
+- 打包流水线增量：`bridge` 步骤（工具快照生成 → cargo build → 与主程序同批入 dist）与可选 UPX 压缩（在 `pack.local.json` 配置 `app.upx_dir` 指向 UPX 目录即可启用；主程序二进制由 PyInstaller 应用 UPX，CFG 保护的系统 DLL 自动跳过）。
 
 ## Steamworks 运行库
 
@@ -320,6 +366,12 @@ tools/steamworks/
 
 ```powershell
 uv run pytest -q tests
+```
+
+MCP 链路冒烟（stdio 连接、令牌失败、spawn 拉起、未知工具错误语义与 live 端点全链路）：
+
+```powershell
+uv run python scripts/smoke_bridge.py
 ```
 
 ### 多语言同步与校验
@@ -419,6 +471,7 @@ uv run python pack_pyinstaller.py
 - `--config <path>`：指定本地配置文件，默认 `pack.local.json`。
 - `--skip docs,tree`：跳过指定步骤。
 - `--upx-dir <path>`：临时覆盖 UPX 目录，不传则使用配置或环境变量。
+- 在 `pack.local.json` 的 `app.upx_dir` 填入 UPX 目录即可每次构建自动压缩：主程序二进制由 PyInstaller 应用 UPX，桥（rimcrow-mcp.exe）由打包脚本直接压缩；CFG 保护的系统 DLL 会被自动跳过。
 
 ### Nuitka
 
@@ -604,4 +657,4 @@ main.py     应用入口
 
 ## License
 
-MIT
+本仓库延续上游 MIT 许可证。MCP 桥为独立项目 [ShiGouQAQ/rimcrow-mcp](https://github.com/ShiGouQAQ/rimcrow-mcp)，采用 GPL-3.0-or-later 许可证。
