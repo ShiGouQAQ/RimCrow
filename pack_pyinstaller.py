@@ -653,7 +653,35 @@ def _find_bridge_crate() -> Path | None:
     return None
 
 
-def build_bridge(version: str) -> bool:
+def _locate_upx_exe(upx_dir: str) -> Path | None:
+    """Locate upx.exe under a configured directory; passing the exe path directly also works."""
+    raw = Path(upx_dir) if upx_dir else None
+    if raw is None:
+        return None
+    if raw.is_file():
+        return raw
+    candidate = raw / "upx.exe"
+    return candidate if candidate.is_file() else None
+
+
+def _compress_with_upx(target: Path, upx_dir: str) -> None:
+    """Compress one built exe with UPX in place; keep the uncompressed artifact on any failure."""
+    upx_exe = _locate_upx_exe(upx_dir)
+    if upx_exe is None:
+        print(f"提示: 未找到 upx.exe，跳过 {target.name} 压缩: {upx_dir}")
+        return
+    before = target.stat().st_size
+    result = subprocess.run(
+        [str(upx_exe), "--best", str(target)],
+        capture_output=True, text=True,
+    )
+    if result.returncode != 0:
+        print(f"UPX 压缩失败（退出码 {result.returncode}），保留未压缩产物:\n{result.stdout[-400:]}\n{result.stderr[-600:]}")
+        return
+    print(f"★ UPX 压缩完成: {target.name}（{before} -> {target.stat().st_size} 字节）")
+
+
+def build_bridge(version: str, upx_dir: str = "") -> bool:
     """构建流程：快照生成 → cargo build --release → 产物入 dist。
 
     主 exe 与 bridge **同一条流水线同批产出**——工具面变更时两者一起重发，
@@ -697,6 +725,8 @@ def build_bridge(version: str) -> bool:
     dist_dir.mkdir(exist_ok=True)
     target = dist_dir / exe.name
     shutil.copy2(exe, target)
+    if upx_dir:
+        _compress_with_upx(target, upx_dir)
     print(f"★ rimcrow-mcp.exe 已入 dist: {target}（{target.stat().st_size} 字节, v{version}）")
     return True
 
@@ -848,7 +878,7 @@ def main(argv: list[str] | None = None) -> int:
 
     if steps.get("bridge", True):
         print("=== 构建 rimcrow-mcp.exe（Rust 桥，双产物）===")
-        build_bridge(app_version)
+        build_bridge(app_version, upx_dir=upx_dir)
     else:
         print("提示: 已跳过 rimcrow-mcp.exe 构建。")
 
